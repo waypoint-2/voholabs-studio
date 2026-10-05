@@ -9,6 +9,10 @@ import axios from 'axios';
 import { isSafePublicHttpsUrl } from '@gitroom/nestjs-libraries/dtos/webhooks/webhook.url.validator';
 import { ssrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
 import { parseDataUrl } from '@gitroom/nestjs-libraries/upload/data.url';
+import {
+  BRIEF_DOCUMENT_MIME_TYPES,
+  detectBriefDocument,
+} from '@gitroom/nestjs-libraries/upload/brief.upload';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { fromBuffer } = require('file-type');
 
@@ -115,10 +119,21 @@ class CloudflareStorage implements IUploadProvider {
     return `${this._uploadUrl}/${id}.${extension}`;
   }
 
-  async uploadFile(file: Express.Multer.File): Promise<any> {
+  async uploadFile(
+    file: Express.Multer.File,
+    options?: { documents?: boolean }
+  ): Promise<any> {
     try {
-      const detected = await fromBuffer(file.buffer);
-      if (!detected || !ALLOWED_MIME_TYPES.has(detected.mime)) {
+      const detected = options?.documents
+        ? await detectBriefDocument(file.buffer, file.originalname)
+        : await fromBuffer(file.buffer);
+      if (
+        !detected ||
+        !(
+          ALLOWED_MIME_TYPES.has(detected.mime) ||
+          (options?.documents && BRIEF_DOCUMENT_MIME_TYPES.has(detected.mime))
+        )
+      ) {
         throw new Error('Unsupported file type.');
       }
       const id = makeId(10);

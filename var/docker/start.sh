@@ -7,12 +7,16 @@ TEMPORAL_DB_DIR="${TEMPORAL_DB_DIR:-/temporal}"
 mkdir -p "$TEMPORAL_DB_DIR"
 
 echo "[start] launching Temporal dev server..."
+# WAL with synchronous=normal makes SQLite sync to disk at checkpoints rather
+# than on every commit, so a slow volume does not time Temporal out.
 temporal server start-dev \
   --ip 0.0.0.0 \
   --port 7233 \
   --ui-port 8233 \
   --db-filename "$TEMPORAL_DB_DIR/temporal.db" \
   --namespace default \
+  --sqlite-pragma journal_mode=wal \
+  --sqlite-pragma synchronous=normal \
   --log-level error &
 
 # Wait for Temporal to accept connections (up to ~90s) so the backend's

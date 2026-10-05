@@ -26,11 +26,9 @@ import {
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
 import { IntegrationPictureService } from '@gitroom/nestjs-libraries/integrations/integration.picture.service';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
+import { paidOnlyChannelMessage } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
 
-import {
-  paidOnlyChannelMessage,
-  providerNeedsPaidPlan,
-} from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
 @ApiTags('Integrations')
 @Controller('/integrations')
 export class NoAuthIntegrationsController {
@@ -39,7 +37,8 @@ export class NoAuthIntegrationsController {
     private _integrationService: IntegrationService,
     private _refreshIntegrationService: RefreshIntegrationService,
     private _organizationService: OrganizationService,
-    private _integrationPictureService: IntegrationPictureService
+    private _integrationPictureService: IntegrationPictureService,
+    private _walletService: WalletService
   ) {}
 
   /**
@@ -55,10 +54,7 @@ export class NoAuthIntegrationsController {
    * broken image.
    */
   @Get('/:id/picture')
-  async getIntegrationPicture(
-    @Param('id') id: string,
-    @Res() res: Response
-  ) {
+  async getIntegrationPicture(@Param('id') id: string, @Res() res: Response) {
     const picture = await this._integrationPictureService.getPicture(id);
 
     if (!picture) {
@@ -112,14 +108,28 @@ export class NoAuthIntegrationsController {
 
     const org = await this._organizationService.getOrgById(organization);
 
-    // X and TikTok are unavailable on the free plan, however the connection
+    // X is unavailable on the free plan, however the connection
     // was started (app, public API, CLI).
     if (
-      providerNeedsPaidPlan(integration) &&
-      !(await this._integrationService.organizationHasPaidPlan(organization))
+      !(await this._integrationService.canUseProvider(
+        organization,
+        integration
+      ))
     ) {
-      throw new HttpException(paidOnlyChannelMessage(), 402);
+      throw await this._walletService.providerLocked(
+        organization,
+        integration,
+        paidOnlyChannelMessage()
+      );
     }
+
+    // A workspace paying for X from its wallet pays for the account lookup
+    // made while connecting.
+    const connectCharge = await this._integrationService.chargeConnectLookup(
+      organization,
+      integration,
+      body.state
+    );
 
     if (!integrationProvider.customFields) {
       await ioRedis.del(`login:${body.state}`);
@@ -224,6 +234,13 @@ export class NoAuthIntegrationsController {
         });
       }
     });
+
+    if ((error || !id) && connectCharge) {
+      await this._integrationService.refundApiUse(
+        connectCharge,
+        'Refund: the channel was not connected'
+      );
+    }
 
     if (error) {
       throw new NotEnoughScopes(error);

@@ -1,9 +1,22 @@
-import { Injectable } from '@nestjs/common';
-import {
-  paidOnlyChannelMessage,
-  providerNeedsPaidPlan,
-} from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
+import { Injectable, Logger } from '@nestjs/common';
+import { providerNeedsPaidPlan } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
 import { BadBody } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import { stripLinks } from '@gitroom/helpers/utils/strip.links';
+import {
+  InsufficientCreditsError,
+  notEnoughCreditsMessage,
+  postOccurrenceChargeKey,
+  repeatRunOf,
+  WalletService,
+} from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
+import {
+  REFUND_REASONS,
+  WalletPostsService,
+} from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.posts.service';
+import { Context } from '@temporalio/activity';
+import { WalletBillingService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.billing.service';
+import { walletAlert } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.alert';
+import { withWalletPublish } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.x';
 import {
   Activity,
   ActivityMethod,
@@ -17,7 +30,10 @@ import {
 import { Integration, Post, State } from '@prisma/client';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
-import { AuthTokenDetails } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
+import {
+  AuthTokenDetails,
+  PostResponse,
+} from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
@@ -55,9 +71,25 @@ function slimPost(post: any) {
   return rest;
 }
 
+// The text a provider sends for a message: X strips links when
+// STRIP_LINKS_FROM_X_POSTS is set, and is then billed for the stripped text.
+const sentTextFor =
+  (provider: { stripLinks?: () => boolean }) => (message: string) =>
+    provider.stripLinks?.() ? stripLinks(message) : message;
+
+const currentRun = () => {
+  try {
+    return repeatRunOf(Context.current().info.workflowExecution.workflowId);
+  } catch (err) {
+    return undefined;
+  }
+};
+
 @Injectable()
 @Activity()
 export class PostActivity {
+  private _logger = new Logger(PostActivity.name);
+
   constructor(
     private _postService: PostsService,
     private _notificationService: NotificationService,
@@ -65,8 +97,174 @@ export class PostActivity {
     private _integrationService: IntegrationService,
     private _refreshIntegrationService: RefreshIntegrationService,
     private _webhookService: WebhooksService,
-    private _temporalService: TemporalService
+    private _temporalService: TemporalService,
+    private _walletService: WalletService,
+    private _walletBilling: WalletBillingService,
+    private _walletPosts: WalletPostsService
   ) {}
+
+  // A channel the free plan locks is open to a paid plan, or to a
+  // pay-as-you-go workspace that pays per post from its wallet. Throws when
+  // neither applies, and returns whether this workspace pays from its wallet.
+  private async paysFromWallet(integration: Integration) {
+    if (!providerNeedsPaidPlan(integration.providerIdentifier)) {
+      return false;
+    }
+    if (
+      await this._postService.organizationHasPaidPlan(
+        integration.organizationId
+      )
+    ) {
+      return false;
+    }
+    if (
+      await this._walletService.unlocksProvider(
+        integration.organizationId,
+        integration.providerIdentifier
+      )
+    ) {
+      return true;
+    }
+    throw new BadBody(
+      integration.providerIdentifier,
+      '',
+      '',
+      await this._walletService.lockedProviderMessageFor(
+        integration.organizationId,
+        integration.providerIdentifier
+      )
+    );
+  }
+
+  // The credits for one post as it is published. A post is paid when it is
+  // scheduled, so this normally finds that charge and takes nothing more; a
+  // post queued before that (or a repeat occurrence) is charged now, priced
+  // on the text sent to the network. Returns the charge to give back if
+  // publishing then fails.
+  private async chargeForPost(
+    integration: Integration,
+    post: { id: string; message: string },
+    sentText: string
+  ) {
+    try {
+      // The one link rule, on the exact text sent to the network, so the
+      // cost shown and the cost charged cannot drift apart.
+      const actionKey = await this._walletService.postActionKey(
+        integration.providerIdentifier,
+        sentText,
+        { sent: true }
+      );
+      const entry = await this._walletBilling.charge({
+        organizationId: integration.organizationId,
+        actionKey,
+        chargeKey: postOccurrenceChargeKey(post.id, currentRun()),
+        reference: post.id,
+      });
+      return entry.idempotencyKey!;
+    } catch (err) {
+      if (err instanceof InsufficientCreditsError) {
+        // Not posted and never retried (BadBody is not retryable).
+        throw new BadBody(
+          integration.providerIdentifier,
+          '',
+          '',
+          notEnoughCreditsMessage()
+        );
+      }
+      throw err;
+    }
+  }
+
+  // Gives back the credits taken for a post the network did not publish.
+  private async refundPost(
+    integration: Integration,
+    postId: string,
+    charge: string
+  ) {
+    try {
+      await this._walletService.refund(
+        charge,
+        'Refund: the post was not published'
+      );
+    } catch (refundErr) {
+      // The post failed but its credits were not given back.
+      await walletAlert(
+        `Refund failed for post ${postId} (charge ${charge}, organization ${integration.organizationId})`
+      ).catch(() => undefined);
+      this._logger.error(
+        `[wallet] REFUND FAILED for post ${postId} (charge ${charge}, organization ${integration.organizationId}): ${
+          refundErr instanceof Error ? refundErr.stack : refundErr
+        }`
+      );
+    }
+  }
+
+  // Publishes, charging each post first. Only the posts the network did not
+  // publish are refunded: on success, those missing from the result; on
+  // failure, all of them except any the error lists as already published
+  // (`postedIds`, for a provider that sends several posts in one call and
+  // fails part way). `sentText` gives the text the provider will actually send
+  // for a message (e.g. with links stripped), which is what the network bills.
+  // `publish` is told whether the wallet pays for this publish, so it can
+  // hand the provider an integration marked for it (withWalletPublish).
+  private async publishPaid<T extends PostResponse[]>(
+    integration: Integration,
+    posts: { id: string; message: string }[],
+    sentText: (message: string) => string,
+    publish: (walletPays: boolean) => Promise<T>
+  ) {
+    if (!(await this.paysFromWallet(integration))) {
+      // Paid when it was scheduled, but this workspace no longer pays from
+      // its wallet (e.g. it moved to a paid plan): give that back.
+      if (
+        providerNeedsPaidPlan(integration.providerIdentifier) &&
+        !currentRun()
+      ) {
+        await this._walletPosts
+          .refundPosts(
+            integration.organizationId,
+            posts.map((p) => p.id),
+            REFUND_REASONS.includedInPlan
+          )
+          .catch(() => undefined);
+      }
+      return publish(false);
+    }
+    const charges: { postId: string; charge: string }[] = [];
+    let published: T;
+    try {
+      for (const post of posts) {
+        charges.push({
+          postId: post.id,
+          charge: await this.chargeForPost(
+            integration,
+            post,
+            sentText(post.message)
+          ),
+        });
+      }
+      published = await publish(true);
+    } catch (err) {
+      const postedIds = new Set<string>(
+        Array.isArray((err as { postedIds?: unknown })?.postedIds)
+          ? (err as { postedIds: string[] }).postedIds
+          : []
+      );
+      for (const { postId, charge } of charges) {
+        if (!postedIds.has(postId)) {
+          await this.refundPost(integration, postId, charge);
+        }
+      }
+      throw err;
+    }
+    const returned = new Set((published || []).map((p) => p.id));
+    for (const { postId, charge } of charges) {
+      if (!returned.has(postId)) {
+        await this.refundPost(integration, postId, charge);
+      }
+    }
+    return published;
+  }
 
   @ActivityMethod()
   async getIntegrationById(orgId: string, id: string) {
@@ -177,31 +375,39 @@ export class PostActivity {
       posts
     );
 
-    return getIntegration.comment(
-      integration.internalId,
-      postId,
-      lastPostId,
-      integration.token,
-      await Promise.all(
-        (newPosts || []).map(async (p) => ({
-          id: p.id,
-          message: stripHtmlValidation(
-            getIntegration.editor,
-            p.content,
-            true,
-            false,
-            !/<\/?[a-z][\s\S]*>/i.test(p.content),
-            getIntegration.mentionFormat
-          ),
-          settings: JSON.parse(p.settings || '{}'),
-          media: await this._postService.updateMedia(
-            p.id,
-            JSON.parse(p.image || '[]'),
-            getIntegration?.convertToJPEG || false
-          ),
-        }))
-      ),
-      integration
+    const prepared = await Promise.all(
+      (newPosts || []).map(async (p) => ({
+        id: p.id,
+        message: stripHtmlValidation(
+          getIntegration.editor,
+          p.content,
+          true,
+          false,
+          !/<\/?[a-z][\s\S]*>/i.test(p.content),
+          getIntegration.mentionFormat
+        ),
+        settings: JSON.parse(p.settings || '{}'),
+        media: await this._postService.updateMedia(
+          p.id,
+          JSON.parse(p.image || '[]'),
+          getIntegration?.convertToJPEG || false
+        ),
+      }))
+    );
+
+    return this.publishPaid(
+      integration,
+      prepared,
+      sentTextFor(getIntegration),
+      (walletPays) =>
+        getIntegration.comment(
+          integration.internalId,
+          postId,
+          lastPostId,
+          integration.token,
+          prepared,
+          withWalletPublish(integration, walletPays)
+        )
     );
   }
 
@@ -211,50 +417,47 @@ export class PostActivity {
       integration.providerIdentifier
     );
 
-    // X and TikTok are unavailable on the free plan, including posts queued
-    // before that changed.
-    if (
-      providerNeedsPaidPlan(integration.providerIdentifier) &&
-      !(await this._postService.organizationHasPaidPlan(
-        integration.organizationId
-      ))
-    ) {
-      throw new BadBody(
-        integration.providerIdentifier,
-        '',
-        '',
-        paidOnlyChannelMessage()
-      );
-    }
+    // X is unavailable on the free plan, including posts queued
+    // before that changed, unless the wallet pays for them (checked again in
+    // publishPaid, where the credits are taken).
+    await this.paysFromWallet(integration);
 
     const newPosts = await this._postService.updateTags(
       integration.organizationId,
       posts
     );
 
-    const postNow = await getIntegration.post(
-      integration.internalId,
-      integration.token,
-      await Promise.all(
-        (newPosts || []).map(async (p) => ({
-          id: p.id,
-          message: stripHtmlValidation(
-            getIntegration.editor,
-            p.content,
-            true,
-            false,
-            !/<\/?[a-z][\s\S]*>/i.test(p.content),
-            getIntegration.mentionFormat
-          ),
-          settings: JSON.parse(p.settings || '{}'),
-          media: await this._postService.updateMedia(
-            p.id,
-            JSON.parse(p.image || '[]'),
-            getIntegration?.convertToJPEG || false
-          ),
-        }))
-      ),
-      integration
+    const prepared = await Promise.all(
+      (newPosts || []).map(async (p) => ({
+        id: p.id,
+        message: stripHtmlValidation(
+          getIntegration.editor,
+          p.content,
+          true,
+          false,
+          !/<\/?[a-z][\s\S]*>/i.test(p.content),
+          getIntegration.mentionFormat
+        ),
+        settings: JSON.parse(p.settings || '{}'),
+        media: await this._postService.updateMedia(
+          p.id,
+          JSON.parse(p.image || '[]'),
+          getIntegration?.convertToJPEG || false
+        ),
+      }))
+    );
+
+    const postNow = await this.publishPaid(
+      integration,
+      prepared,
+      sentTextFor(getIntegration),
+      (walletPays) =>
+        getIntegration.post(
+          integration.internalId,
+          integration.token,
+          prepared,
+          withWalletPublish(integration, walletPays)
+        )
     );
 
     await this._temporalService.client

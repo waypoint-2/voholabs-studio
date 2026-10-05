@@ -49,6 +49,7 @@ import { FirstBillingComponent } from '@gitroom/frontend/components/billing/firs
 import { TrialTracker } from '@gitroom/frontend/components/layout/gtm.component';
 import { RequiredOnboarding } from '@gitroom/frontend/components/onboarding/required.onboarding';
 import { RequiredTerms } from '@gitroom/frontend/components/onboarding/required.terms';
+import { WalletHeader } from '@gitroom/frontend/components/wallet/wallet.header';
 
 const interTight = Inter_Tight({
   weight: ['600', '500', '700'],
@@ -96,7 +97,8 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
               name={user.name}
               email={user.email}
               onDone={() => {
-                window.location.href = '/';
+                // A new account goes on to connecting its channels.
+                window.location.href = '/launches?onboarding=true';
               }}
             />
           </div>
@@ -121,7 +123,11 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
           >
             <RequiredTerms
               onDone={() => {
-                window.location.href = '/';
+                // Keep a new account on its way to connecting channels; anyone
+                // re-agreeing to updated Terms goes back to the app as before.
+                window.location.href = searchParams.get('onboarding')
+                  ? '/launches?onboarding=true'
+                  : '/';
               }}
             />
           </div>
@@ -203,6 +209,7 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                           <ChromeExtensionComponent />
                           <div className="w-[1px] h-[20px] bg-blockSeparator" />
                           <AttachToFeedbackIcon />
+                          {user.tier === 'FREE' && <WalletHeader />}
                           <NotificationComponent />
                         </div>
                       </div>

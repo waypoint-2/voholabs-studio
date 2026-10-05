@@ -6,6 +6,7 @@ import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { AllProvidersSettings } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/all.providers.settings';
 import z from 'zod';
 import { checkAuth } from '@gitroom/nestjs-libraries/chat/auth.context';
+import { errorMessageForAgent } from '@gitroom/nestjs-libraries/chat/tools/post.error.shared';
 import {
   attachmentUrl,
   describeMedia,
@@ -14,6 +15,11 @@ import {
   readPostMedia,
   withPostLinks,
 } from '@gitroom/nestjs-libraries/chat/tools/post.write.shared';
+import {
+  onPaidPlan,
+  orgFromContext,
+  walletRefusal,
+} from '@gitroom/nestjs-libraries/chat/tools/wallet.shared';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
 
 @Injectable()
@@ -304,7 +310,7 @@ To remove media rather than replace it, pass "clearAttachments" — an empty "at
               ? 'schedule'
               : 'update';
 
-          // Same server-side validation the dashboard and schedulePostTool run.
+          // Same server-side validation the dashboard and integrationSchedulePostTool run.
           const [validation] = await this._postsService.validatePosts(
             organizationId,
             [
@@ -405,9 +411,17 @@ To remove media rather than replace it, pass "clearAttachments" — an empty "at
             ...(type === 'update' ? { livePostUnchanged: true } : {}),
           };
         } catch (err) {
+          const refusal = walletRefusal(err);
+          if (refusal) {
+            return { error: refusal };
+          }
           return {
             error: `Failed to edit the post: ${
-              err instanceof Error ? err.message : 'Unexpected error'
+              onPaidPlan(orgFromContext(context))
+                ? err instanceof Error
+                  ? err.message
+                  : 'Unexpected error'
+                : errorMessageForAgent(err)
             }`,
           };
         }

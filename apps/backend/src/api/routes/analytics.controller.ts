@@ -13,13 +13,21 @@ export class AnalyticsController {
     private _postsService: PostsService
   ) {}
 
+  // `fresh=1` skips the one-hour cache and reads the network again.
   @Get('/:integration')
   async getIntegration(
     @GetOrgFromRequest() org: Organization,
     @Param('integration') integration: string,
-    @Query('date') date: string
+    @Query('date') date: string,
+    @Query('fresh') fresh?: string
   ) {
-    return this._integrationService.checkAnalytics(org, integration, date);
+    return this._integrationService.checkAnalytics(
+      org,
+      integration,
+      date,
+      false,
+      fresh === '1' || fresh === 'true'
+    );
   }
 
   @Get('/post/:postId')
@@ -29,5 +37,22 @@ export class AnalyticsController {
     @Query('date') date: string
   ) {
     return this._postsService.checkPostAnalytics(org.id, postId, +date);
+  }
+
+  // When the channel analytics shown were read from the network (null: not
+  // cached, the next read is live).
+  @Get('/:integration/updated')
+  async getIntegrationUpdated(
+    @GetOrgFromRequest() org: Organization,
+    @Param('integration') integration: string,
+    @Query('date') date: string
+  ) {
+    return {
+      updatedAt: await this._integrationService.analyticsUpdatedAt(
+        org.id,
+        integration,
+        date
+      ),
+    };
   }
 }

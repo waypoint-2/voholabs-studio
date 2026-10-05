@@ -6,6 +6,7 @@ import {
   NotFoundException,
   Param,
   Patch,
+  Query,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Organization } from '@prisma/client';
@@ -20,11 +21,11 @@ import { SaveBriefDocumentDto } from '@gitroom/nestjs-libraries/dtos/brief/brief
 import { BRIEF_REGISTRY } from '@gitroom/nestjs-libraries/agent-brief/brief.registry';
 
 // The agent brief over the public API, so the CLI and any external agent can
-// read and edit it with an API key. Gated on the AI capability, which the free
-// tier does not carry.
+// read and edit it with an API key. Open on a paid plan, or after the first
+// wallet top-up.
 @ApiTags('Public API')
 @Controller('/public/v1')
-@CheckPolicies([AuthorizationActions.Create, Sections.AI])
+@CheckPolicies([AuthorizationActions.Create, Sections.BRIEF])
 export class PublicBriefController {
   constructor(private _briefService: BriefService) {}
 
@@ -97,8 +98,17 @@ export class PublicBriefController {
   deleteDocument(
     @GetOrgFromRequest() org: Organization,
     @Param('category') category: string,
-    @Param('key') key: string
+    @Param('key') key: string,
+    // ?keepHistory=true keeps the document's revisions and records the
+    // removal in them instead of wiping them.
+    @Query('keepHistory') keepHistory?: string
   ) {
-    return this._briefService.deleteDocument(org.id, category, key);
+    return this._briefService.deleteDocument(
+      org.id,
+      category,
+      key,
+      false,
+      keepHistory === 'true'
+    );
   }
 }

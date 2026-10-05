@@ -3,6 +3,11 @@ import { createTool } from '@mastra/core/tools';
 import { Injectable } from '@nestjs/common';
 import z from 'zod';
 import { checkAuth } from '@gitroom/nestjs-libraries/chat/auth.context';
+import {
+  onPaidPlan,
+  orgFromContext,
+  walletRefusal,
+} from '@gitroom/nestjs-libraries/chat/tools/wallet.shared';
 import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.service';
 
 @Injectable()
@@ -32,9 +37,17 @@ What comes back differs by network. Read the labels rather than assuming a fixed
           .number()
           .optional()
           .describe('How many days back to look. Defaults to 30.'),
+        fresh: z
+          .boolean()
+          .optional()
+          .describe(
+            'Accepted for symmetry: post analytics are always read live'
+          ),
       }),
       outputSchema: z.object({
         analytics: z.any().optional(),
+        cachedAt: z.string().nullable().optional(),
+        note: z.string().optional(),
         missingReleaseId: z.boolean().optional(),
         error: z.string().optional(),
       }),
@@ -67,8 +80,22 @@ What comes back differs by network. Read the labels rather than assuming a fixed
             };
           }
 
-          return { analytics };
+          // A paid plan gets the answer as it always had it.
+          if (onPaidPlan(orgFromContext(context))) {
+            return { analytics };
+          }
+          return {
+            analytics,
+            cachedAt: null,
+            note: 'Read from the network just now (post analytics are not cached).',
+          };
         } catch (err) {
+          // Not enough wallet credits: the reason and the top-up link, not a
+          // tool failure. The network was not asked.
+          const refusal = walletRefusal(err);
+          if (refusal) {
+            return { error: refusal };
+          }
           return {
             error: `Failed to read post analytics: ${
               err instanceof Error ? err.message : 'Unexpected error'

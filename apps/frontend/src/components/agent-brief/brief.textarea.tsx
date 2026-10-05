@@ -27,6 +27,9 @@ export const BriefTextarea: FC<{
       ref={ref}
       value={value}
       rows={1}
+      // User text: English rules in an Arabic UI keep their own direction
+      // and punctuation.
+      dir="auto"
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
       className={

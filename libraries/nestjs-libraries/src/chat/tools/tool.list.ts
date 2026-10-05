@@ -37,6 +37,11 @@ import { SanityMcpListTool } from '@gitroom/nestjs-libraries/chat/tools/sanity.m
 import { SanityMcpCallTool } from '@gitroom/nestjs-libraries/chat/tools/sanity.mcp.call.tool';
 import { MediaMcpListTool } from '@gitroom/nestjs-libraries/chat/tools/media.mcp.list.tool';
 import { MediaMcpCallTool } from '@gitroom/nestjs-libraries/chat/tools/media.mcp.call.tool';
+import { WalletBalanceTool } from '@gitroom/nestjs-libraries/chat/tools/wallet.balance.tool';
+import { WalletTransactionsTool } from '@gitroom/nestjs-libraries/chat/tools/wallet.transactions.tool';
+import { WalletPricesTool } from '@gitroom/nestjs-libraries/chat/tools/wallet.prices.tool';
+import { SkillsListTool } from '@gitroom/nestjs-libraries/chat/tools/skills.list.tool';
+import { SkillGetTool } from '@gitroom/nestjs-libraries/chat/tools/skills.get.tool';
 
 export const toolList = [
   AccountInfoTool,
@@ -47,6 +52,8 @@ export const toolList = [
   BriefAssetTool,
   BriefHistoryTool,
   MarkLearnedTool,
+  SkillsListTool,
+  SkillGetTool,
   IntegrationListTool,
   GroupListTool,
   IntegrationValidationTool,
@@ -78,6 +85,11 @@ export const toolList = [
   // configured instead of vanishing.
   MediaMcpListTool,
   MediaMcpCallTool,
+  // The credit wallet. Listed to every plan: a paid plan is told it does not
+  // use credits, a free one how to top up.
+  WalletBalanceTool,
+  WalletTransactionsTool,
+  WalletPricesTool,
   // Media generation belongs to the vendor, so the agent does not get these:
   //   GenerateImageTool      - vendor's job
   //   GenerateVideoTool      - exposes no models on this account anyway
@@ -90,7 +102,7 @@ export const toolList = [
   UploadFromUrlTool,
 ];
 
-// Not part of the free plan: the brief, and AI media. The MCP leaves them out
+// Not part of the free plan: the brief, the skills library, and AI media. The MCP leaves them out
 // of what it lists to a free organization, so the free plan is a complete
 // product on its own terms rather than one with locked doors in it. Each of
 // these also refuses by itself (see paidOnly), for the routes that cannot pick
@@ -103,6 +115,38 @@ export const paidToolNames = [
   'briefAssetTool',
   'briefHistory',
   'markLearned',
+  'skillsList',
+  'skillGet',
   'mediaMcpList',
   'mediaMcpCall',
+];
+
+// The paid tools a wallet top-up opens, when a price row opens the brief or
+// the skills (WalletService.unlockedKeys). AI media generation is never among
+// them. Each tool still refuses on its own when its own key is not open
+// (paidOnly(context, feature, 'brief' | 'skills')).
+export const walletToolNames = [
+  'briefListTool',
+  'briefSaveTool',
+  'briefDeleteTool',
+  'briefLearnTool',
+  'briefAssetTool',
+  'briefHistory',
+  'markLearned',
+  'skillsList',
+  'skillGet',
+];
+
+// What a wallet top-up can open that walletToolNames serves.
+export const walletToolKeys = ['brief', 'skills'];
+
+// Not served to a paid plan, whose MCP lists exactly the tools it had before
+// the wallet: the wallet tools (a paid plan never uses credits) and the
+// skills library.
+export const notOnPlanToolNames = [
+  'walletBalance',
+  'walletTransactions',
+  'walletPrices',
+  'skillsList',
+  'skillGet',
 ];

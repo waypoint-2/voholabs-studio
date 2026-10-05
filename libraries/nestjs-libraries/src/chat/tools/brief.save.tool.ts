@@ -86,7 +86,7 @@ Use briefListTool for the list of valid categories and keys. Only documents in a
       }),
       execute: async (inputData, context) => {
         checkAuth(inputData, context);
-        const blocked = paidOnly(context, 'The agent brief');
+        const blocked = paidOnly(context, 'The agent brief', 'brief');
         if (blocked) {
           return { error: blocked };
         }

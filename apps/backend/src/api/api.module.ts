@@ -4,6 +4,11 @@ import { AuthService } from '@gitroom/backend/services/auth/auth.service';
 import { UsersController } from '@gitroom/backend/api/routes/users.controller';
 import { AuthMiddleware } from '@gitroom/backend/services/auth/auth.middleware';
 import { StripeController } from '@gitroom/backend/api/routes/stripe.controller';
+import { SkillsController } from '@gitroom/backend/api/routes/skills.controller';
+import {
+  WalletController,
+  WalletWebhookController,
+} from '@gitroom/backend/api/routes/wallet.controller';
 import { StripeService } from '@gitroom/nestjs-libraries/services/stripe.service';
 import { AnalyticsController } from '@gitroom/backend/api/routes/analytics.controller';
 import { PoliciesGuard } from '@gitroom/backend/services/auth/permissions/permissions.guard';
@@ -36,8 +41,14 @@ import { MonitorController } from '@gitroom/backend/api/routes/monitor.controlle
 import { NoAuthIntegrationsController } from '@gitroom/backend/api/routes/no.auth.integrations.controller';
 import { OAuthAppController } from '@gitroom/backend/api/routes/oauth-app.controller';
 import { ApprovedAppsController } from '@gitroom/backend/api/routes/approved-apps.controller';
-import { OAuthController, OAuthAuthorizedController } from '@gitroom/backend/api/routes/oauth.controller';
-import { DeviceController, DeviceAuthorizedController } from '@gitroom/backend/api/routes/device.controller';
+import {
+  OAuthController,
+  OAuthAuthorizedController,
+} from '@gitroom/backend/api/routes/oauth.controller';
+import {
+  DeviceController,
+  DeviceAuthorizedController,
+} from '@gitroom/backend/api/routes/device.controller';
 import { DeviceAuthService } from '@gitroom/nestjs-libraries/database/prisma/device/device.auth.service';
 import { AnnouncementsController } from '@gitroom/backend/api/routes/announcements.controller';
 import { AdminController } from '@gitroom/backend/api/routes/admin.controller';
@@ -74,6 +85,8 @@ const authenticatedController = [
   AnnouncementsController,
   AdminController,
   MediaMeterController,
+  WalletController,
+  SkillsController,
 ];
 @Module({
   imports: [UploadModule],
@@ -81,6 +94,8 @@ const authenticatedController = [
     RootController,
     HealthController,
     StripeController,
+    // Verified by its Stripe signature, so not behind the login middleware.
+    WalletWebhookController,
     AuthController,
     PublicController,
     // Guards itself with PROVISION_SECRET, so it stays out of

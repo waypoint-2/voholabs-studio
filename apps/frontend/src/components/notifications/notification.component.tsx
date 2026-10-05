@@ -8,6 +8,7 @@ import dayjs from 'dayjs';
 import { useClickAway } from '@uidotdev/usehooks';
 import ReactLoading from '@gitroom/frontend/components/layout/loading';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useWalletAccess } from '@gitroom/frontend/components/wallet-locks/wallet.access';
 function replaceLinks(text: string) {
   const urlRegex =
     /(\bhttps?:\/\/[-A-Z0-9+&@#/%?=~_|!:,.;]*[-A-Z0-9+&@#/%=~_|])/gi;
@@ -108,7 +109,19 @@ const NotificationComponent = () => {
   const loadNotifications = useCallback(async () => {
     return await (await fetch('/notifications')).json();
   }, []);
-  const { data, mutate } = useSWR('notifications-list', loadNotifications);
+  // Polled, so activity (a post published or failed, a top-up) shows on the
+  // bell without a reload. A paid plan keeps the bell as it was.
+  const paidPlan = useWalletAccess() === 'plan';
+  const { data, mutate } = useSWR(
+    'notifications-list',
+    loadNotifications,
+    paidPlan
+      ? undefined
+      : {
+          refreshInterval: 60000,
+          refreshWhenHidden: false,
+        }
+  );
   const changeShow = useCallback(() => {
     mutate(
       {

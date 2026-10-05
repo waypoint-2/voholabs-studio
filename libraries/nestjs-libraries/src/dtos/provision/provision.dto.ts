@@ -2,9 +2,11 @@ import {
   IsBoolean,
   IsDefined,
   IsEmail,
+  IsIn,
   IsISO8601,
   IsOptional,
   IsString,
+  MaxLength,
 } from 'class-validator';
 
 export class ProvisionLookupDto {
@@ -31,4 +33,19 @@ export class ProvisionSessionDto {
   @IsString()
   @IsDefined()
   orgId: string;
+}
+
+export class ProvisionOnboardingFinishDto {
+  @IsString()
+  @IsDefined()
+  orgId: string;
+
+  @IsIn(['DONE', 'FAILED'])
+  @IsDefined()
+  status: 'DONE' | 'FAILED';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  error?: string;
 }

@@ -61,6 +61,9 @@ model Organization {
   hermesConversations HermesConversation[]
   postRevisions       PostRevision[]
   briefRevisions      BriefRevision[]
+  wallet              Wallet?
+  walletEntries       WalletEntry[]
+  briefOnboardings    BriefOnboarding[]
 
   @@index([apiKey])
   @@index([streakSince])
@@ -1138,4 +1141,213 @@ model BriefRevision {
   organization   Organization            @relation(fields: [organizationId], references: [id])
 
   @@index([organizationId, category, key, createdAt])
+}
+
+// Prepaid credit wallet, separate from Postiz's own Stripe billing (Subscription,
+// STRIPE_* env vars, /stripe webhook), which it never reads or writes.
+//
+// Every table here is additive and every new column nullable or defaulted:
+// db push runs with --accept-data-loss, so nothing may be renamed or made
+// required later.
+
+// One row per thing we charge for. The price in credits is worked out from
+// the provider's cost, the exchange rate and the multiplier in BillingSetting,
+// so changing costMicros on one row reprices that action everywhere.
+model BillableAction {
+  id            String       @id @default(uuid())
+  key           String       @unique
+  provider      String
+  // Groups the price list: channels, storage, ai, brief, skills ...
+  category      String?
+  name          String
+  description   String?
+  // What one unit is: post, gb_month, 1k_tokens, run ... Usage is always
+  // rounded up to whole units (2.1 GB is billed as 3).
+  unit          String       @default("request")
+  // Units that cost nothing: per month when freePeriod is "month", or ever
+  // when it is "once" (the first brief onboarding is free, a redo is not).
+  freeUnits     Int?
+  freePeriod    FreePeriod?
+  // How it is charged. The price list's wording is generated from this and
+  // the fields above, never written per row.
+  billing       BillingModel @default(PER_USE)
+  // Only open to a workspace that has topped up its wallet. This is what the
+  // code checks to unlock a feature or a channel: no row, no access.
+  requiresTopUp Boolean      @default(true)
+  // What the provider charges us per unit, in millionths of costCurrency.
+  costMicros    Int          @default(0)
+  costCurrency  String       @default("USD")
+  // Overrides the default multiplier (basis points, 15000 = x1.5).
+  multiplierBp  Int?
+  // A price set directly in hundredths of a credit, for things with no
+  // provider cost to mark up. Takes precedence when set.
+  fixedPrice    Int?
+  active        Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([provider])
+}
+
+// The sections of the price list. An action's category is a key here.
+model BillingCategory {
+  key       String   @id
+  sortOrder Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+// Key/value settings for the wallet: credits per pound, exchange rates, the
+// default multiplier, top-up amounts. Kept in the database, not the code.
+model BillingSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+model Wallet {
+  id                  String       @id @default(uuid())
+  organizationId      String       @unique
+  stripeCustomerId    String?
+  paymentMethodId     String?
+  cardBrand           String?
+  cardLast4           String?
+  autoTopUp           Boolean      @default(false)
+  // Hundredths of a credit: top up when the balance falls below this.
+  autoTopUpThreshold  Int?
+  autoTopUpAmount     Int?
+  autoTopUpMonthlyCap Int?
+  // Set by the first successful top-up; this is what makes an organization
+  // pay-as-you-go.
+  firstTopUpAt        DateTime?
+  // Set when a top-up is refunded or disputed: the wallet stops paying for
+  // anything (pay-as-you-go is off) until support clears it.
+  frozenAt            DateTime?
+  // The currency of the first top-up; later top-ups must match it.
+  currency            String?
+  // When the org was last told its scheduled usage can't be covered (one
+  // in-app notification per UTC day at most).
+  forecastNotifiedAt  DateTime?
+  // Saved card expiry, "MM/YYYY".
+  cardExp             String?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  organization        Organization @relation(fields: [organizationId], references: [id])
+}
+
+// The ledger. The balance is the sum of amount for an organization; nothing
+// stores it separately.
+model WalletEntry {
+  id             String          @id @default(uuid())
+  organizationId String
+  // Hundredths of a credit. Positive adds, negative spends.
+  amount         Int
+  type           WalletEntryType
+  actionKey      String?
+  quantity       Int             @default(1)
+  unitPrice      Int?
+  description    String
+  // Makes a charge, refund or top-up happen at most once.
+  idempotencyKey String?         @unique
+  // A post id, Stripe payment intent id, and so on.
+  reference      String?
+  // For top-ups: what was paid before tax, in the smallest unit of currency.
+  paidAmount     Int?
+  currency       String?
+  meta           String?
+  // For charges: the thing paid for (e.g. post:<id>). idempotencyKey is
+  // chargeKey#n, one per attempt that was not refunded.
+  chargeKey      String?
+  // For GRANT and ADJUST: the superadmin who made the entry.
+  actorId        String?
+  createdAt      DateTime        @default(now())
+  organization   Organization    @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([reference])
+  @@index([organizationId, chargeKey])
+  @@index([organizationId, type, createdAt])
+}
+
+// PER_USE: charged each time it is used. MONTHLY: charged per unit above the
+// free amount when first exceeded, then again at the start of each month
+// while still above (usage rounded up to whole units). UNLOCK: never charged;
+// opens with the first top-up.
+enum BillingModel {
+  PER_USE
+  MONTHLY
+  UNLOCK
+}
+
+// ONCE: the free units are used up for good (the first brief onboarding).
+// MONTH: they renew every month (free storage).
+enum FreePeriod {
+  ONCE
+  MONTH
+}
+
+enum WalletEntryType {
+  TOPUP
+  AUTO_TOPUP
+  SPEND
+  REFUND
+  GRANT
+  ADJUST
+}
+
+// One run of the guided brief onboarding (first one free, later ones charged
+// from the wallet). It only fills the brief; it never creates an agent.
+model BriefOnboarding {
+  id             String                @id @default(uuid())
+  organizationId String
+  status         BriefOnboardingStatus @default(RUNNING)
+  // The answers, as JSON.
+  answers        String
+  // The language the run was opened in. A reopened run keeps it, so the
+  // interview does not switch language halfway. Null on older runs.
+  lang           String?
+  // The wallet charge for this run (its idempotencyKey), null when free or
+  // on a paid plan.
+  chargeKey      String?
+  error          String?
+  createdAt      DateTime              @default(now())
+  finishedAt     DateTime?
+  organization   Organization          @relation(fields: [organizationId], references: [id])
+
+  @@index([organizationId, createdAt])
+}
+
+enum BriefOnboardingStatus {
+  RUNNING
+  DONE
+  FAILED
+}
+
+// The skills library. Content lives here, not in the code; agents find skills
+// through MCP and the app lists them.
+model Skill {
+  id         String   @id @default(uuid())
+  slug       String   @unique
+  name       String
+  summary    String
+  whatItDoes String?
+  whenToUse  String?
+  body       String   @default("")
+  // SkillTag keys.
+  tags       String[]
+  // The Studio tools a skill tells the agent to use.
+  tools      String[]
+  version    String?
+  active     Boolean  @default(true)
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([active, sortOrder])
+}
+
+model SkillTag {
+  key       String   @id
+  label     String
+  sortOrder Int      @default(0)
+  updatedAt DateTime @updatedAt
 }

@@ -34,8 +34,58 @@ dayjs.extend(utc);
 
 import {
   hasAccess,
+  paidOnlyChannelMessage,
   providerNeedsPaidPlan,
 } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
+import {
+  InsufficientCreditsError,
+  WalletService,
+  walletPaymentRequired,
+  walletRequiredMessage,
+} from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
+import { WalletBillingService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.billing.service';
+import { walletAlert } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.alert';
+
+// Paid reads and lookups on a provider's API, priced by the `<provider>.<action>`
+// wallet rows.
+export type PaidApiAction = 'post_read' | 'user_lookup';
+
+// Channel analytics reads each post twice: once in the timeline, then again
+// for its stats. Both reads are billed by X.
+export const READS_PER_ANALYTICS_POST = 2;
+
+// A post's channel-analytics reads are charged at most once per UTC day per
+// workspace, whichever window (7, 30, 90 days) or refresh reads it first.
+export const analyticsReadPrefix = (
+  identifier: string,
+  orgId: string,
+  day = dayjs.utc().format('YYYY-MM-DD')
+) => `${providerKey(identifier)}read:${orgId}:${day}:`;
+
+// Upstream's one-hour cache of a channel's analytics for one window.
+const analyticsCacheKey = (orgId: string, integration: string, date: string) =>
+  `integration:${orgId}:${integration}:${date}`;
+
+const providerKey = (identifier: string) =>
+  (identifier || '').toLowerCase().split('-')[0];
+
+// Shown (and logged) when a wallet workspace has too few credits for a paid
+// read or lookup, which is then not made.
+export const apiNeedsCreditsMessage = (identifier: string) => {
+  const p = providerKey(identifier);
+  const label =
+    p.length <= 2 ? p.toUpperCase() : p[0].toUpperCase() + p.slice(1);
+  return `Not enough credits in your wallet to load this from ${label}. Top up to see it.`;
+};
+
+// Shown when a wallet workspace's balance is used up and auto top-up cannot
+// refill it, so live analytics are not read from the network.
+export const analyticsNeedsCreditsMessage = (scope: 'channel' | 'post') =>
+  `Not enough credits in your wallet to load this ${scope}'s analytics. Top up to see them.`;
+
+const notEnoughCreditsToConnectMessage = () =>
+  'Not enough credits in your wallet to connect this channel. Top up, then connect it again.';
+
 @Injectable()
 export class IntegrationService {
   private storage = UploadFactory.createStorage();
@@ -46,7 +96,9 @@ export class IntegrationService {
     private _notificationService: NotificationService,
     @Inject(forwardRef(() => RefreshIntegrationService))
     private _refreshIntegrationService: RefreshIntegrationService,
-    private _temporalService: TemporalService
+    private _temporalService: TemporalService,
+    private _walletService: WalletService,
+    private _walletBilling: WalletBillingService
   ) {}
 
   async changeActiveCron(orgId: string) {
@@ -284,10 +336,8 @@ export class IntegrationService {
     // the tokens, so the user's authorization is cleared on their side too.
     // Never let a failed revoke block the deletion the user asked for.
     try {
-      const getIntegration = await this._integrationRepository.getIntegrationById(
-        org,
-        id
-      );
+      const getIntegration =
+        await this._integrationRepository.getIntegrationById(org, id);
 
       if (getIntegration?.token) {
         const provider = this._integrationManager.getSocialIntegration(
@@ -373,11 +423,23 @@ export class IntegrationService {
     return { success: true };
   }
 
+  // When the cached channel analytics for this window were read from the
+  // network (ISO time), or null when nothing is cached (the next read is
+  // live). The cache itself is upstream's (one hour); this only dates it.
+  async analyticsUpdatedAt(orgId: string, integration: string, date: string) {
+    const key = analyticsCacheKey(orgId, integration, date);
+    return (await ioRedis.get(`${key}:at`)) || null;
+  }
+
+  // `fresh` skips the cache and reads the network again (a wallet workspace
+  // pays for those reads, see below). A paid plan always gets the cache, as
+  // before: `fresh` is ignored for it.
   async checkAnalytics(
     org: Organization,
     integration: string,
     date: string,
-    forceRefresh = false
+    forceRefresh = false,
+    fresh = false
   ): Promise<AnalyticsData[]> {
     const getIntegration = await this.getIntegrationById(org.id, integration);
 
@@ -387,6 +449,10 @@ export class IntegrationService {
 
     if (getIntegration.type !== 'social') {
       return [];
+    }
+
+    if (fresh && (await this.organizationHasPaidPlan(org.id))) {
+      fresh = false;
     }
 
     const integrationProvider = this._integrationManager.getSocialIntegration(
@@ -419,36 +485,103 @@ export class IntegrationService {
         }
       }
 
-      const getIntegrationData = await ioRedis.get(
-        `integration:${org.id}:${integration}:${date}`
-      );
+      const getIntegrationData = fresh
+        ? null
+        : await ioRedis.get(analyticsCacheKey(org.id, integration, date));
       if (getIntegrationData) {
         return JSON.parse(getIntegrationData);
       }
 
       if (integrationProvider.analytics) {
-        const loadAnalytics = await integrationProvider.analytics(
-          getIntegration.internalId,
-          getIntegration.token,
-          +date
+        // A wallet workspace pays for each post read (only on a cache miss,
+        // above). Before X is asked its balance must be above zero (auto
+        // top-up may refill it); otherwise this throws the wallet 402. The
+        // reads are then charged by how many posts came back, two reads per
+        // post.
+        const walletPays = await this.paysFromWallet(
+          org.id,
+          getIntegration.providerIdentifier
         );
-        await ioRedis.set(
-          `integration:${org.id}:${integration}:${date}`,
-          JSON.stringify(loadAnalytics),
-          'EX',
+        if (
+          walletPays &&
+          !(await this.assertCanReadAnalytics(
+            org.id,
+            getIntegration.providerIdentifier,
+            'channel'
+          ))
+        ) {
+          return [];
+        }
+
+        // A provider the wallet pays for takes a 4th argument that is told
+        // which posts were read (XProvider.analytics). Other providers use the
+        // 4th argument for something else, so it is only passed here.
+        const postsRead: string[] = [];
+        const loadAnalytics = walletPays
+          ? await (
+              integrationProvider.analytics as (
+                id: string,
+                accessToken: string,
+                date: number,
+                onPostsRead: (count: number, ids: string[]) => void
+              ) => Promise<AnalyticsData[]>
+            ).call(
+              integrationProvider,
+              getIntegration.internalId,
+              getIntegration.token,
+              +date,
+              (_count: number, ids: string[]) => {
+                postsRead.push(...ids);
+              }
+            )
+          : await integrationProvider.analytics(
+              getIntegration.internalId,
+              getIntegration.token,
+              +date
+            );
+        if (walletPays && postsRead.length > 0) {
+          // The reads already happened, so they are charged even into a
+          // negative balance: two reads per post, and only for posts not
+          // already charged today (another window or a refresh).
+          await this.chargeApiReads({
+            orgId: org.id,
+            identifier: getIntegration.providerIdentifier,
+            postIds: postsRead,
+            reference: getIntegration.id,
+          });
+        }
+        const ttl =
           !process.env.NODE_ENV || process.env.NODE_ENV === 'development'
             ? 1
-            : 3600
+            : 3600;
+        await ioRedis.set(
+          analyticsCacheKey(org.id, integration, date),
+          JSON.stringify(loadAnalytics),
+          'EX',
+          ttl
+        );
+        await ioRedis.set(
+          analyticsCacheKey(org.id, integration, date) + ':at',
+          new Date().toISOString(),
+          'EX',
+          ttl
         );
         return loadAnalytics;
       }
 
       return [];
     } catch (e) {
+      // The wallet refusal (402) reaches the caller, who shows the top-up.
+      if (
+        e instanceof HttpException &&
+        e.getStatus() === HttpStatus.PAYMENT_REQUIRED
+      ) {
+        throw e;
+      }
       // A RefreshToken error means the access token expired mid-request; retry
       // once with a forced refresh. Guard against infinite recursion.
       if (e instanceof RefreshToken && !forceRefresh) {
-        return this.checkAnalytics(org, integration, date, true);
+        return this.checkAnalytics(org, integration, date, true, fresh);
       }
 
       // Any other failure (token refresh error, provider outage, bad response)
@@ -497,6 +630,265 @@ export class IntegrationService {
     );
   }
 
+  // X is locked on the free plan. A paid plan opens it, and so
+  // does a wallet top-up for a provider the wallet charges for.
+  async canUseProvider(orgId: string, identifier: string) {
+    return (
+      !providerNeedsPaidPlan(identifier) ||
+      (await this.organizationHasPaidPlan(orgId)) ||
+      (await this._walletService.unlocksProvider(orgId, identifier))
+    );
+  }
+
+  // Whether this workspace pays for this provider's API from its wallet: it
+  // is not on a paid plan, and its top-up opened the provider. Paid plans and
+  // the free plan are never charged.
+  // A paid API the wallet charges for, used by a workspace without a paid
+  // plan. Such a workspace's calls are charged when its wallet has unlocked
+  // the provider, and refused (never made unbilled) when it has not, e.g. a
+  // frozen wallet that still has the channel connected.
+  async paysFromWallet(orgId: string, identifier: string) {
+    return (
+      providerNeedsPaidPlan(identifier) &&
+      !(await this.organizationHasPaidPlan(orgId)) &&
+      (await this._walletService.billsProvider(identifier))
+    );
+  }
+
+  // Called before a live analytics read on a paid API by a workspace that
+  // pays from its wallet (a cached answer never gets here). A balance above
+  // zero may read; at zero or below, auto top-up is tried (within its
+  // monthly limit) and the read goes ahead if that lifts the balance above
+  // zero. Otherwise throws the wallet 402 and the network must not be asked.
+  // The reads are charged after they happen, into a negative balance if
+  // need be, so a read can take the balance below zero by one batch at most.
+  // Returns false (read nothing, quietly) when the read has no price row.
+  async assertCanReadAnalytics(
+    orgId: string,
+    identifier: string,
+    scope: 'channel' | 'post'
+  ) {
+    if (!(await this._walletService.unlocksProvider(orgId, identifier))) {
+      throw walletPaymentRequired(
+        await this._walletService.lockedProviderMessageFor(orgId, identifier)
+      );
+    }
+    const readKey = `${providerKey(identifier)}.post_read`;
+    if (!(await this._walletService.price(readKey))) {
+      console.warn(
+        `[wallet] No price for ${readKey}, analytics not read (organization ${orgId})`
+      );
+      return false;
+    }
+    if ((await this._walletService.balance(orgId)) > 0) {
+      return true;
+    }
+    if (await this._walletBilling.autoTopUpFor(orgId, 1)) {
+      return true;
+    }
+    console.warn(
+      `[wallet] ${analyticsNeedsCreditsMessage(scope)} (organization ${orgId})`
+    );
+    throw walletPaymentRequired(analyticsNeedsCreditsMessage(scope));
+  }
+
+  // Charges a wallet workspace for a paid read or lookup, once per chargeKey.
+  // Returns the charge (to refund if nothing came back), or false when the
+  // wallet cannot pay or the action has no price: the call must then not be
+  // made.
+  async chargeApiUse(params: {
+    orgId: string;
+    identifier: string;
+    action: PaidApiAction;
+    chargeKey: string;
+    reference?: string;
+    quantity?: number;
+    allowNegative?: boolean;
+  }): Promise<string | false> {
+    if (
+      !(await this._walletService.unlocksProvider(
+        params.orgId,
+        params.identifier
+      ))
+    ) {
+      return false;
+    }
+    try {
+      const entry = await this._walletBilling.charge({
+        organizationId: params.orgId,
+        actionKey: `${providerKey(params.identifier)}.${params.action}`,
+        chargeKey: params.chargeKey,
+        quantity: params.quantity,
+        reference: params.reference,
+        allowNegative: params.allowNegative,
+      });
+      return entry.idempotencyKey!;
+    } catch (err) {
+      if (err instanceof InsufficientCreditsError) {
+        console.warn(
+          `[wallet] ${apiNeedsCreditsMessage(params.identifier)} (organization ${
+            params.orgId
+          }, ${params.chargeKey})`
+        );
+      } else {
+        console.error(
+          `[wallet] Could not charge ${params.chargeKey} for organization ${params.orgId}:`,
+          err
+        );
+      }
+      return false;
+    }
+  }
+
+  // Charges the channel-analytics reads of these posts, skipping posts this
+  // workspace already paid to read today (UTC). Returns the ledger entry, or
+  // null when nothing new was charged.
+  async chargeApiReads(params: {
+    orgId: string;
+    identifier: string;
+    postIds: string[];
+    reference?: string;
+  }) {
+    if (
+      !params.postIds.length ||
+      !(await this._walletService.unlocksProvider(
+        params.orgId,
+        params.identifier
+      ))
+    ) {
+      return null;
+    }
+    const chargePrefix = analyticsReadPrefix(params.identifier, params.orgId);
+    try {
+      return await this._walletBilling.chargeItems({
+        organizationId: params.orgId,
+        actionKey: `${providerKey(params.identifier)}.post_read`,
+        chargePrefix,
+        items: params.postIds,
+        unitsPerItem: READS_PER_ANALYTICS_POST,
+        reference: params.reference,
+        allowNegative: true,
+      });
+    } catch (err) {
+      console.error(
+        `[wallet] Could not charge ${chargePrefix} for organization ${params.orgId}:`,
+        err
+      );
+      return null;
+    }
+  }
+
+  async refundApiUse(charge: string, reason: string) {
+    try {
+      await this._walletService.refund(charge, reason);
+    } catch (err) {
+      console.error(`[wallet] REFUND FAILED for charge ${charge}:`, err);
+      await walletAlert(
+        `Refund failed for charge ${charge}: ${
+          err instanceof Error ? err.message : err
+        }`
+      ).catch(() => undefined);
+    }
+  }
+
+  // Runs a provider function asked for by the app (`/integrations/function`).
+  // For a wallet workspace on a paid API only the account lookup behind
+  // @mentions may run, charged per username and UTC day; a handle already
+  // known is answered from the stored list without asking the network.
+  async runProviderFunction<T>(
+    orgId: string,
+    integration: Integration,
+    name: string,
+    data: any,
+    call: () => Promise<T>
+  ): Promise<T | [] | false> {
+    if (!(await this.paysFromWallet(orgId, integration.providerIdentifier))) {
+      return call();
+    }
+    if (name !== 'mention') {
+      return false;
+    }
+
+    const query = String(data?.query || '').trim();
+    if (!query) {
+      return [];
+    }
+    const known = await this.getMentions(
+      integration.providerIdentifier,
+      query
+    );
+    if (
+      known.some(
+        (m) => (m.username || '').toLowerCase() === query.toLowerCase()
+      )
+    ) {
+      return [];
+    }
+
+    const charge = await this.chargeApiUse({
+      orgId,
+      identifier: integration.providerIdentifier,
+      action: 'user_lookup',
+      chargeKey: `${providerKey(integration.providerIdentifier)}lookup:${
+        integration.id
+      }:${query.toLowerCase()}:${dayjs.utc().format('YYYY-MM-DD')}`,
+      reference: integration.id,
+    });
+    if (!charge) {
+      return [];
+    }
+
+    const result = await call();
+    if (!Array.isArray(result) || !result.length) {
+      await this.refundApiUse(charge, 'Refund: no account was found');
+    }
+    return result;
+  }
+
+  // The account lookup made when a wallet workspace connects a channel on a
+  // paid API, charged once per connection attempt. Throws a 402 the app turns
+  // into the top-up flow when the wallet cannot pay. Returns the charge to
+  // refund if the connection fails, or undefined when nothing was charged.
+  async chargeConnectLookup(
+    orgId: string,
+    identifier: string,
+    state: string
+  ): Promise<string | undefined> {
+    if (!(await this.paysFromWallet(orgId, identifier))) {
+      return undefined;
+    }
+    const charge = await this.chargeApiUse({
+      orgId,
+      identifier,
+      action: 'user_lookup',
+      chargeKey: `${providerKey(identifier)}lookup:connect:${orgId}:${state}`,
+    });
+    if (!charge) {
+      throw new HttpException(
+        {
+          message: notEnoughCreditsToConnectMessage(),
+          wallet: true,
+          url: '/wallet',
+        },
+        HttpStatus.PAYMENT_REQUIRED
+      );
+    }
+    return charge;
+  }
+
+  // Why a provider the free plan locks is refused. With the workspace given,
+  // a wallet on hold (after a refunded or disputed top-up) says so instead of
+  // asking for a top-up.
+  async lockedProviderMessage(identifier: string, orgId?: string) {
+    if (orgId) {
+      return this._walletService.lockedProviderMessageFor(orgId, identifier);
+    }
+    if (!(await this._walletService.billsProvider(identifier))) {
+      return paidOnlyChannelMessage();
+    }
+    return walletRequiredMessage(identifier);
+  }
+
   async processInternalPlug(
     data: {
       post: string;
@@ -532,7 +924,7 @@ export class IntegrationService {
       return;
     }
 
-    // X and TikTok automations don't run for free organizations.
+    // X automations don't run for free organizations.
     if (
       providerNeedsPaidPlan(getIntegration.providerIdentifier) &&
       !(await this.organizationHasPaidPlan(data.orgId))
@@ -567,7 +959,7 @@ export class IntegrationService {
       return true;
     }
 
-    // X and TikTok automations don't run for free organizations.
+    // X automations don't run for free organizations.
     if (
       providerNeedsPaidPlan(getPlugById.integration.providerIdentifier) &&
       !(await this.organizationHasPaidPlan(

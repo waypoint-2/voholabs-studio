@@ -18,6 +18,10 @@ export type BriefRevisionDiff = {
   changed: string[];
 };
 
+// created: written for the first time (or again after a delete). deleted:
+// the document was removed. edited: anything else.
+export type BriefRevisionChange = 'created' | 'edited' | 'deleted';
+
 const sha256 = (value: string) =>
   createHash('sha256').update(value).digest('hex');
 
@@ -33,10 +37,14 @@ export class BriefRevisionService {
     orgId: string,
     category: string,
     key: string,
-    content: BriefDocumentContent
+    content: BriefDocumentContent,
+    // Records that the document was removed, rather than emptied. Stored in
+    // the revision only; the document itself is gone.
+    options?: { deleted?: boolean }
   ) {
-    const serialized = JSON.stringify(content);
-    const contentHash = sha256(stableStringify(content));
+    const stored = options?.deleted ? { ...content, deleted: true } : content;
+    const serialized = JSON.stringify(stored);
+    const contentHash = sha256(stableStringify(stored));
 
     const existing = await this._briefRevisionRepository.getRevisions(
       orgId,
@@ -113,9 +121,19 @@ export class BriefRevisionService {
         older.find((revision) => !!revision.learnedAt) ||
         older[older.length - 1];
 
-      if (!baseline) {
+      const deleted = this.isDeleted(latest.content);
+
+      // A document written for the first time has nothing to compare against.
+      // Only its removal is reported without an earlier revision.
+      if (!baseline && !deleted) {
         return queue;
       }
+
+      const change: BriefRevisionChange = deleted
+        ? 'deleted'
+        : this.isDeleted(baseline.content)
+        ? 'created'
+        : 'edited';
 
       queue.push({
         id,
@@ -124,8 +142,10 @@ export class BriefRevisionService {
         editedAt: latest.createdAt,
         learned: !!latest.learnedAt,
         revisionId: latest.id,
+        change,
         diff: this.computeDiff(
-          this.parseContent(baseline.content),
+          // A removal with no earlier revision: nothing left to compare.
+          this.parseContent((baseline || latest).content),
           this.parseContent(latest.content)
         ),
       });
@@ -138,6 +158,7 @@ export class BriefRevisionService {
       editedAt: Date;
       learned: boolean;
       revisionId: string;
+      change: BriefRevisionChange;
       diff: BriefRevisionDiff;
     }[]);
   }
@@ -234,6 +255,14 @@ export class BriefRevisionService {
       };
     } catch (err) {
       return { v: 1, blocks: [] };
+    }
+  }
+
+  private isDeleted(raw: string) {
+    try {
+      return !!JSON.parse(raw || '{}')?.deleted;
+    } catch (err) {
+      return false;
     }
   }
 

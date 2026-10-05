@@ -12,7 +12,7 @@ export default function PrivacyPage() {
   return (
     <LegalPage
       title="Voholabs Studio Privacy Policy"
-      updated="27 July 2026"
+      updated="4 October 2026"
       intro={
         <>
           Voholabs Studio is a social media scheduling and publishing tool
@@ -75,6 +75,15 @@ export default function PrivacyPage() {
               <strong>Technical data</strong> — IP address, browser and device
               information, and error and usage logs generated when you use the
               service.
+            </>,
+            <>
+              <strong>Product usage data:</strong> which screens you open and
+              which features you use (for example connecting a channel,
+              scheduling a post or topping up the wallet), linked to your account
+              and organisation IDs and your plan. It never includes the text or
+              media of your posts, what you type into forms, or your name or
+              email address, we do not record your screen, and no cookie is set
+              for it.
             </>,
           ]}
         />
@@ -377,6 +386,11 @@ export default function PrivacyPage() {
               legitimate interest in running a reliable service.
             </>,
             <>
+              To understand which features are used and which are not, so we
+              can improve the product, using the product usage data above. This
+              is in our legitimate interest in improving the service.
+            </>,
+            <>
               To take payment and manage subscriptions, which is necessary to
               perform our contract with you.
             </>,
@@ -407,8 +421,9 @@ export default function PrivacyPage() {
             </>,
             <>Stripe, for subscription payments.</>,
             <>
-              Error monitoring and product analytics providers, used to keep the
-              service working.
+              Error monitoring and product analytics providers (product
+              analytics: PostHog, hosted in the United States), used to keep the
+              service working and to improve it.
             </>,
             <>
               Professional advisers, or authorities where we are legally

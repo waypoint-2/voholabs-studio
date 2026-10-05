@@ -7,6 +7,10 @@ import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useClickOutside } from '@mantine/hooks';
+import { useWalletAccess } from '@gitroom/frontend/components/wallet-locks/wallet.access';
+
+// Tall enough for the presets, the custom field and "Remove delay".
+const MENU_HEIGHT = 200;
 
 const delayOptions = [
   { value: 1, label: '1m' },
@@ -52,6 +56,23 @@ export const DelayComponent: FC<{
     setIsOpen(false);
   });
 
+  // The editor scrolls inside the composer, so a menu opened near its bottom
+  // edge would be cut off: open it upwards when there is no room below.
+  // A paid plan keeps the menu opening downwards, as it always did.
+  const paidPlan = useWalletAccess() === 'plan';
+  const [openUp, setOpenUp] = useState(false);
+  const toggle = useCallback(() => {
+    if (!isOpen && ref.current && !paidPlan) {
+      const trigger = ref.current.getBoundingClientRect();
+      const scroller = ref.current.closest('#social-content');
+      const bottom = scroller
+        ? scroller.getBoundingClientRect().bottom
+        : window.innerHeight;
+      setOpenUp(bottom - trigger.bottom < MENU_HEIGHT);
+    }
+    setIsOpen(!isOpen);
+  }, [isOpen, ref, paidPlan]);
+
   const setDelay = useCallback(
     (index: number) => (minutes: number) => {
       if (current !== 'global') {
@@ -80,7 +101,7 @@ export const DelayComponent: FC<{
   return (
     <div ref={ref} className="relative">
       <div
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={toggle}
         data-tooltip-id="tooltip"
         data-tooltip-content={
           !currentDelay
@@ -95,7 +116,18 @@ export const DelayComponent: FC<{
         <DelayIcon />
       </div>
       {isOpen && (
-        <div className="z-[300] absolute end-0 top-[100%] w-[200px] bg-newBgColorInner p-[8px] menu-shadow translate-y-[10px] flex flex-col rounded-[8px]">
+        <div
+          className={
+            paidPlan
+              ? 'z-[300] absolute end-0 top-[100%] w-[200px] bg-newBgColorInner p-[8px] menu-shadow translate-y-[10px] flex flex-col rounded-[8px]'
+              : clsx(
+                  'z-[300] absolute end-0 w-[200px] bg-newBgColorInner p-[8px] menu-shadow flex flex-col rounded-[8px]',
+                  openUp
+                    ? 'bottom-[100%] -translate-y-[10px]'
+                    : 'top-[100%] translate-y-[10px]'
+                )
+          }
+        >
           <div className="grid grid-cols-4 gap-[4px]">
             {delayOptions.map((option) => (
               <div

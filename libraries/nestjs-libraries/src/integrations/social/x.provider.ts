@@ -10,7 +10,12 @@ import {
 import { lookup } from 'mime-types';
 import sharp from 'sharp';
 import { readOrFetch } from '@gitroom/helpers/utils/read.or.fetch';
-import { SocialAbstract } from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import {
+  BadBody,
+  RefreshToken,
+  SocialAbstract,
+} from '@gitroom/nestjs-libraries/integrations/social.abstract';
+import { isWalletPublish } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.x';
 import { Plug } from '@gitroom/helpers/decorators/plug.decorator';
 import { Integration } from '@prisma/client';
 import { timer } from '@gitroom/helpers/utils/timer';
@@ -22,6 +27,10 @@ import { stripLinks as removeLinks } from '@gitroom/helpers/utils/strip.links';
 import { XDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/x.dto';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 import { hasExtension } from '@gitroom/helpers/utils/has.extension';
+
+// What a wallet publish says when X's API credits for the app are used up.
+const X_CREDITS_DEPLETED =
+  'Posting failed - X is not accepting posts right now. Please try again later';
 
 @Rules(
   `X can have maximum 4 pictures, or maximum one video, it can also be without attachments ${
@@ -544,10 +553,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(tweetBody),
-    });
-    const { data } = (await tweetResponse.json()) as {
-      data: { id: string };
-    };
+    }).catch((err) => this.walletPublishError(err, integration));
+    const data = await this.tweetCreated(tweetResponse, tweetBody, integration);
 
     return [
       {
@@ -608,10 +615,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(tweetBody),
-    });
-    const { data } = (await tweetResponse.json()) as {
-      data: { id: string };
-    };
+    }).catch((err) => this.walletPublishError(err, integration));
+    const data = await this.tweetCreated(tweetResponse, tweetBody, integration);
 
     return [
       {
@@ -621,6 +626,88 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         status: 'posted',
       },
     ];
+  }
+
+  // X's API credits for the app are used up (HTTP 402).
+  private creditsDepleted(json: string) {
+    return json.includes('CreditsDepleted') || json.includes('/problems/credits');
+  }
+
+  // A publish the wallet pays for: X's API credits for the app being used up
+  // gets its own reason. Any other error, and every other publish, is passed
+  // on as it is.
+  private walletPublishError(err: unknown, integration: Integration): never {
+    const details = (err as BadBody)?.details?.[0] as
+      | { json?: string; body?: string }
+      | undefined;
+    const json = String(details?.json || '');
+    if (
+      isWalletPublish(integration) &&
+      err instanceof BadBody &&
+      this.creditsDepleted(json)
+    ) {
+      throw new BadBody(
+        'x',
+        json,
+        String(details?.body || ''),
+        X_CREDITS_DEPLETED
+      );
+    }
+    throw err;
+  }
+
+  // Reads the new post's id from X's answer. A publish the wallet pays for
+  // must know for sure whether X took the post, so an answer without an id
+  // (an error status, or a success status carrying only `errors`) goes
+  // through the same error mapping as a failed request and fails with a
+  // clear reason instead of a TypeError that would be retried. Any other
+  // publish reads the answer as it always has.
+  private async tweetCreated(
+    tweetResponse: Response,
+    tweetBody: unknown,
+    integration: Integration
+  ): Promise<{ id: string }> {
+    if (!isWalletPublish(integration)) {
+      const { data } = (await tweetResponse.json()) as {
+        data: { id: string };
+      };
+      return data;
+    }
+    const text = await tweetResponse.text().catch(() => '');
+    let parsed: { data?: { id?: string } } | undefined;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      parsed = undefined;
+    }
+
+    if (tweetResponse.ok && parsed?.data?.id) {
+      return { id: parsed.data.id };
+    }
+
+    const body = JSON.stringify(tweetBody);
+    if (this.creditsDepleted(text)) {
+      throw new BadBody('x', text, body, X_CREDITS_DEPLETED);
+    }
+    const handled = this.handleErrors(text || '{}');
+    if (handled?.type === 'refresh-token' || tweetResponse.status === 401) {
+      throw new RefreshToken(
+        'x',
+        text,
+        body,
+        handled?.value ||
+          'X authentication has expired, please reconnect your account'
+      );
+    }
+    if (handled?.type === 'retry') {
+      throw new Error(handled.value);
+    }
+    throw new BadBody(
+      'x',
+      text,
+      body,
+      handled?.value || 'X did not accept the post'
+    );
   }
 
   private loadAllTweets = async (
@@ -660,7 +747,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   async analytics(
     id: string,
     accessToken: string,
-    date: number
+    date: number,
+    // Told which posts were read (each is read twice: timeline, then stats).
+    onPostsRead?: (count: number, ids: string[]) => void
   ): Promise<AnalyticsData[]> {
     if (process.env.DISABLE_X_ANALYTICS) {
       return [];
@@ -687,6 +776,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         ),
         (p) => p.id
       );
+
+      onPostsRead?.(tweets.length, tweets.map((p) => p.id));
 
       if (tweets.length === 0) {
         return [];

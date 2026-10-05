@@ -1,4 +1,11 @@
-import { Body, Controller, Headers, HttpException, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  HttpException,
+  Param,
+  Post,
+} from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { timingSafeEqual } from 'crypto';
 import { User } from '@prisma/client';
@@ -6,9 +13,11 @@ import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/o
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 import { AuthService as AuthChecker } from '@gitroom/helpers/auth/auth.service';
+import { BriefOnboardingService } from '@gitroom/nestjs-libraries/database/prisma/brief/brief.onboarding.service';
 import {
   ProvisionAccessDto,
   ProvisionLookupDto,
+  ProvisionOnboardingFinishDto,
   ProvisionSessionDto,
 } from '@gitroom/nestjs-libraries/dtos/provision/provision.dto';
 
@@ -41,7 +50,8 @@ export class ProvisionController {
   constructor(
     private _organizationService: OrganizationService,
     private _subscriptionService: SubscriptionService,
-    private _userService: UsersService
+    private _userService: UsersService,
+    private _briefOnboardingService: BriefOnboardingService
   ) {}
 
   // The secret is the only thing standing in front of account creation, so a
@@ -205,5 +215,26 @@ export class ProvisionController {
       apiKey: organization.apiKey ?? null,
       jwt: this.sign(user),
     };
+  }
+
+  /**
+   * Closes a brief onboarding run once the onboarding site has written the
+   * brief (DONE) or given up (FAILED). DONE charges the run to the wallet when
+   * the workspace pays from it; FAILED gives back anything already charged.
+   * Safe to call more than once.
+   */
+  @Post('/onboarding/:id/finish')
+  async finishOnboarding(
+    @Headers('x-provision-secret') secret: string,
+    @Param('id') id: string,
+    @Body() body: ProvisionOnboardingFinishDto
+  ) {
+    this.assertSecret(secret);
+    return this._briefOnboardingService.finish(
+      id,
+      body.orgId,
+      body.status,
+      body.error
+    );
   }
 }

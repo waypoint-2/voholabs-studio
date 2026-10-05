@@ -18,6 +18,10 @@ import Toolbar from 'polotno/toolbar/toolbar';
 import ZoomButtons from 'polotno/toolbar/zoom-buttons';
 import { Button } from '@gitroom/react/form/button';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+import {
+  openTopUpIfWalletRefused,
+  WALLET_INLINE_REQUEST,
+} from '@gitroom/frontend/components/wallet/wallet.bridge';
 import { PictureGeneratorSection } from '@gitroom/frontend/components/launches/polonto/polonto.picture.generation';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { loadVars } from '@gitroom/react/helpers/variable.context';
@@ -51,12 +55,16 @@ const ActionControls = ({ store }: any) => {
           const blob = await store.toBlob();
           const formData = new FormData();
           formData.append('file', blob, 'media.png');
-          const data = await (
-            await fetch('/media/upload-simple', {
-              method: 'POST',
-              body: formData,
-            })
-          ).json();
+          const response = await fetch('/media/upload-simple', {
+            ...WALLET_INLINE_REQUEST,
+            method: 'POST',
+            body: formData,
+          });
+          if (await openTopUpIfWalletRefused(response)) {
+            setLoad(false);
+            return;
+          }
+          const data = await response.json();
           close.setMedia([
             {
               id: data.id,

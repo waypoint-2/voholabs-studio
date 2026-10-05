@@ -3,7 +3,6 @@ import {
   Controller,
   Delete,
   Get,
-  HttpException,
   Param,
   Post,
   Put,
@@ -40,6 +39,7 @@ import {
   paidOnlyChannelMessage,
   providerNeedsPaidPlan,
 } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -49,7 +49,8 @@ export class IntegrationsController {
     private _integrationService: IntegrationService,
     private _postService: PostsService,
     private _refreshIntegrationService: RefreshIntegrationService,
-    private _integrationPictureService: IntegrationPictureService
+    private _integrationPictureService: IntegrationPictureService,
+    private _walletService: WalletService
   ) {}
 
   @Post('/provider/:id/connect')
@@ -227,9 +228,17 @@ export class IntegrationsController {
       throw new Error('Integration not allowed');
     }
 
-    // @ts-ignore the request organization carries its subscription
-    if (providerNeedsPaidPlan(integration) && !hasAccess(org)) {
-      throw new HttpException(paidOnlyChannelMessage(), 402);
+    if (
+      providerNeedsPaidPlan(integration) &&
+      // @ts-ignore the request organization carries its subscription
+      !hasAccess(org) &&
+      !(await this._integrationService.canUseProvider(org.id, integration))
+    ) {
+      throw await this._walletService.providerLocked(
+        org.id,
+        integration,
+        paidOnlyChannelMessage()
+      );
     }
 
     const integrationProvider =
@@ -365,12 +374,19 @@ export class IntegrationsController {
     // @ts-ignore
     if (integrationProvider[body.name]) {
       try {
-        // @ts-ignore
-        const load = await integrationProvider[body.name](
-          getIntegration.token,
+        const load = await this._integrationService.runProviderFunction(
+          org.id,
+          getIntegration,
+          body.name,
           body.data,
-          getIntegration.internalId,
-          getIntegration
+          () =>
+            // @ts-ignore
+            integrationProvider[body.name](
+              getIntegration.token,
+              body.data,
+              getIntegration.internalId,
+              getIntegration
+            )
         );
 
         return load;

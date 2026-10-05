@@ -14,13 +14,25 @@ import {
   withPostLinks,
 } from '@gitroom/nestjs-libraries/chat/tools/post.write.shared';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
+import { CreatePostDto } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
+import {
+  addPendingWalletPost,
+  orgFromContext,
+  PendingWalletPosts,
+  toCredits,
+  walletPostCost,
+  walletRefusal,
+  walletWarning,
+} from '@gitroom/nestjs-libraries/chat/tools/wallet.shared';
 
 @Injectable()
 export class IntegrationSchedulePostTool implements AgentToolInterface {
   constructor(
     private _postsService: PostsService,
     private _integrationService: IntegrationService,
-    private _mediaService: MediaService
+    private _mediaService: MediaService,
+    private _walletService: WalletService
   ) {}
   name = 'integrationSchedulePostTool';
 
@@ -72,8 +84,9 @@ so you CAN schedule "here is my new X post: <link>" before the X post exists.
                 .describe('The id of the integration (not internal id)'),
               isPremium: z
                 .boolean()
+                .optional()
                 .describe(
-                  "If the integration is X, return if it's premium or not"
+                  'Only matters for X: whether the account is X Premium. Defaults to false; leave it out for every other platform.'
                 ),
               date: z.string().describe('The date of the post in UTC time'),
               shortLink: z
@@ -136,16 +149,35 @@ so you CAN schedule "here is my new X post: <link>" before the X post exists.
             z.object({
               postId: z.string(),
               integration: z.string(),
+              cost: z
+                .number()
+                .optional()
+                .describe(
+                  'Credits taken from the wallet for this post and its replies, now, as it is scheduled (per occurrence for a repeating post)'
+                ),
+              costWhenScheduled: z
+                .number()
+                .optional()
+                .describe(
+                  'For a draft: what it will take from the wallet once it is put on the schedule. Nothing is charged for a draft.'
+                ),
+              walletWarning: z.string().optional(),
             })
           )
           .or(z.object({ errors: z.string() })),
       }),
       execute: async (inputData, context) => {
         checkAuth(inputData, context);
-        const organizationId = JSON.parse(
-          (context?.requestContext as any)?.get('organization') as string
-        ).id;
+        const organization = orgFromContext(context);
+        const organizationId = organization?.id;
         const finalOutput = [];
+        // Wallet posts that will publish, so the warning can be added once
+        // every post is on the calendar.
+        const walletPosts: { cost: number }[] = [];
+        // What those posts take from the wallet, priced before any of them is
+        // queued (see walletWarning).
+        const pending: PendingWalletPosts = new Map();
+        const costs = new Map<number, number>();
 
         const integrations = {} as Record<string, Integration>;
         for (const platform of inputData.socialPost) {
@@ -244,14 +276,49 @@ so you CAN schedule "here is my new X post: <link>" before the X post exists.
           };
         }
 
-        for (const post of inputData.socialPost) {
+        // What the wallet will take when each post publishes, read from the
+        // content as createPost saves it. Never blocks the schedule.
+        for (const [index, post] of inputData.socialPost.entries()) {
+          const integration = integrations[post.integrationId];
+          if (!integration) {
+            continue;
+          }
+          const contents = post.postsAndComments.map((p: any) =>
+            withPostLinks(p)
+          );
+          const cost = await walletPostCost(
+            this._walletService,
+            organization,
+            integration.providerIdentifier,
+            contents
+          );
+          if (cost === undefined) {
+            continue;
+          }
+          costs.set(index, cost);
+          if (post.type !== 'draft') {
+            addPendingWalletPost(
+              pending,
+              integration.providerIdentifier,
+              contents,
+              cost
+            );
+          }
+        }
+        const warning = await walletWarning(
+          this._walletService,
+          organizationId,
+          pending
+        );
+
+        for (const [index, post] of inputData.socialPost.entries()) {
           const integration = integrations[post.integrationId];
 
           if (!integration) {
             throw new Error('Integration not found');
           }
 
-          const output = await this._postsService.createPost(organizationId, {
+          const body: CreatePostDto = {
             date: post.date,
             type: post.type as 'draft' | 'schedule' | 'now',
             shortLink: post.shortLink,
@@ -282,8 +349,53 @@ so you CAN schedule "here is my new X post: <link>" before the X post exists.
                 })),
               },
             ],
-          }, 'MCP');
+          };
+          let output;
+          try {
+            output = await this._postsService.createPost(
+              organizationId,
+              body,
+              'MCP'
+            );
+          } catch (err) {
+            // A channel the wallet has not opened yet: the agent gets the
+            // reason and the top-up link, not a raw tool failure.
+            const refusal = walletRefusal(err);
+            if (!refusal) {
+              throw err;
+            }
+            const scheduled = finalOutput.map((p: any) => p.postId);
+            return {
+              output: {
+                errors: scheduled.length
+                  ? `${refusal} Already scheduled in this call, do not schedule them again: ${scheduled.join(
+                      ', '
+                    )}.`
+                  : refusal,
+              },
+            };
+          }
+
+          const cost = costs.get(index);
+          for (const item of output) {
+            if (cost !== undefined) {
+              // "cost" is what was taken now. A draft is not charged until it
+              // is scheduled, so it only says what that will take.
+              if (post.type === 'draft') {
+                item.costWhenScheduled = toCredits(cost);
+              } else {
+                item.cost = toCredits(cost);
+                walletPosts.push(item);
+              }
+            }
+          }
           finalOutput.push(...output);
+        }
+
+        if (warning) {
+          for (const item of walletPosts) {
+            (item as any).walletWarning = warning;
+          }
         }
 
         return {

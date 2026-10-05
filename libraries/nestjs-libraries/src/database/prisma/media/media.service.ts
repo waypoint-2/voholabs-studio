@@ -10,6 +10,7 @@ import { VideoDto } from '@gitroom/nestjs-libraries/dtos/videos/video.dto';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
 import { planOf } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
+import { WalletStorageService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.storage.service';
 import {
   AuthorizationActions,
   Sections,
@@ -24,7 +25,8 @@ export class MediaService {
     private _mediaRepository: MediaRepository,
     private _openAi: OpenaiService,
     private _subscriptionService: SubscriptionService,
-    private _videoManager: VideoManager
+    private _videoManager: VideoManager,
+    private _walletStorage: WalletStorageService
   ) {}
 
   async deleteMedia(org: string, id: string) {
@@ -67,36 +69,75 @@ export class MediaService {
     }
   }
 
-  saveFile(
+  async saveFile(
     org: string,
     fileName: string,
     filePath: string,
     originalName?: string,
-    fileSize?: number
+    fileSize?: number,
+    type?: string
   ) {
     return this._mediaRepository.saveFile(
       org,
       fileName,
       filePath,
       originalName,
-      fileSize
+      fileSize,
+      type
     );
   }
 
   // Bytes the organization may still upload. The usage is the sum of what is
   // in its media library, so there is no counter to keep in step. Files saved
-  // before sizes were recorded count as zero.
+  // before sizes were recorded count as zero. A free-plan organization that
+  // pays from its wallet has no cap: storage above the free amount is paid
+  // for when it is uploaded instead (see assertStorage).
   async storageLeft(org: string) {
     const subscription =
       await this._subscriptionService.getSubscriptionByOrganizationId(org);
-    const limit = pricing[planOf(subscription)].storage_mb * 1024 * 1024;
+    if (await this.paysStorageFromWallet(org, subscription)) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return this.planStorageLeft(org, subscription);
+  }
 
+  private async planStorageLeft(
+    org: string,
+    subscription: Parameters<typeof planOf>[0]
+  ) {
+    const limit = pricing[planOf(subscription)].storage_mb * 1024 * 1024;
     return limit - (await this._mediaRepository.getStorageUsed(org));
   }
 
+  private async paysStorageFromWallet(
+    org: string,
+    subscription: Parameters<typeof planOf>[0]
+  ) {
+    return (
+      planOf(subscription) === 'FREE' &&
+      (await this._walletStorage.liftsCap(org))
+    );
+  }
+
   // Call before the bytes go to storage, so a refused file is never stored.
-  async assertStorage(org: string, incomingBytes: number) {
-    if ((incomingBytes || 0) > (await this.storageLeft(org))) {
+  // A free-plan organization that pays from its wallet pays here for any
+  // storage unit above the free amount the file takes it into (a 402 when it
+  // cannot); `charge: false` only checks it could pay, for a size announced
+  // before the file arrives. Everyone else is held to the plan's cap (413).
+  async assertStorage(
+    org: string,
+    incomingBytes: number,
+    options: { charge?: boolean } = {}
+  ) {
+    const subscription =
+      await this._subscriptionService.getSubscriptionByOrganizationId(org);
+    if (await this.paysStorageFromWallet(org, subscription)) {
+      await this._walletStorage.payForUpload(org, incomingBytes, options);
+      return;
+    }
+    if (
+      (incomingBytes || 0) > (await this.planStorageLeft(org, subscription))
+    ) {
       const message =
         'Your media library is full. Delete files you no longer need, or upgrade for more storage.';
       throw new HttpException({ msg: message, message }, 413);

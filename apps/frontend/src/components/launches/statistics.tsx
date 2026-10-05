@@ -6,6 +6,12 @@ import { ChartSocial } from '@gitroom/frontend/components/analytics/chart-social
 import { Select } from '@gitroom/react/form/select';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { MissingReleaseModal } from '@gitroom/frontend/components/launches/missing-release.modal';
+import {
+  AnalyticsWalletNotice,
+  isWalletRefusal,
+  readAnalytics,
+  WALLET_INLINE,
+} from '@gitroom/frontend/components/platform-analytics/analytics.wallet';
 
 interface AnalyticsData {
   label: string;
@@ -27,7 +33,9 @@ export const StatisticsModal: FC<{
   }, [postId, fetch]);
 
   const loadPostAnalytics = useCallback(async () => {
-    return (await fetch(`/analytics/post/${postId}?date=${dateRange}`)).json();
+    return readAnalytics(
+      await fetch(`/analytics/post/${postId}?date=${dateRange}`, WALLET_INLINE)
+    );
   }, [postId, dateRange, fetch]);
 
   const { data: statisticsData, isLoading: isLoadingStatistics } = useSWR(
@@ -83,6 +91,10 @@ export const StatisticsModal: FC<{
         <MissingReleaseModal postId={postId} onSuccess={() => mutateAnalytics()} />
       ) : (
         <div className="flex flex-col gap-[24px]">
+          {/* The wallet cannot pay for reading this post */}
+          {isWalletRefusal(analyticsData) && (
+            <AnalyticsWalletNotice scope="post" />
+          )}
           {/* Post Analytics Section */}
           {analyticsData && Array.isArray(analyticsData) && analyticsData.length > 0 && (
             <div className="flex flex-col gap-[14px]">
@@ -184,7 +196,8 @@ export const StatisticsModal: FC<{
           </div>
 
           {/* No analytics available message */}
-          {(!analyticsData || !Array.isArray(analyticsData) || analyticsData.length === 0) &&
+          {!isWalletRefusal(analyticsData) &&
+            (!analyticsData || !Array.isArray(analyticsData) || analyticsData.length === 0) &&
             (!statisticsData?.clicks || statisticsData.clicks.length === 0) && (
               <div className="text-center text-gray-400 py-[20px]">
                 {t('no_statistics_available', 'No statistics available for this post')}

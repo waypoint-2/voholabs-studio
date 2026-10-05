@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PostActivity } from '@gitroom/orchestrator/activities/post.activity';
+import { WalletActivity } from '@gitroom/orchestrator/activities/wallet.activity';
 import { getTemporalModule } from '@gitroom/nestjs-libraries/temporal/temporal.module';
 import { DatabaseModule } from '@gitroom/nestjs-libraries/database/prisma/database.module';
 import { AutopostService } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.service';
@@ -12,6 +13,7 @@ const activities = [
   AutopostService,
   EmailActivity,
   IntegrationsActivity,
+  WalletActivity,
 ];
 @Module({
   imports: [

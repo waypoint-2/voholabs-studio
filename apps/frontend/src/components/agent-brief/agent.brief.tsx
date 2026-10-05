@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { FC, ReactNode, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useSWRConfig } from 'swr';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
@@ -22,7 +22,10 @@ import { BriefTree } from '@gitroom/frontend/components/agent-brief/brief.tree';
 import { BriefDocument } from '@gitroom/frontend/components/agent-brief/brief.document';
 
 // /brief, /brief/<category>, /brief/<category>/<document key>
-export const AgentBrief = () => {
+// headerAction sits beside the save indicator (the wallet's redo button).
+export const AgentBrief: FC<{ headerAction?: ReactNode }> = ({
+  headerAction,
+}) => {
   const t = useT();
   const router = useRouter();
   const params = useParams();
@@ -112,6 +115,7 @@ export const AgentBrief = () => {
               document={active}
               content={content}
               onDeleted={afterDelete}
+              headerAction={headerAction}
             />
           ) : (
             <div className="text-textItemBlur">

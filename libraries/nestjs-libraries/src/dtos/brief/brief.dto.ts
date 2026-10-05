@@ -117,3 +117,10 @@ export class SaveBriefDocumentDto {
   @Type(() => BriefAssetDto)
   assets?: BriefAssetDto[];
 }
+
+export class StartBriefOnboardingDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  lang?: string;
+}

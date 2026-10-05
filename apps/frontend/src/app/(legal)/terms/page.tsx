@@ -40,7 +40,7 @@ export default function TermsPage() {
   return (
     <LegalPage
       title="Voholabs Studio Terms of Service"
-      updated="20 September 2026"
+      updated="4 October 2026"
       intro={
         <>
           These terms are the agreement between you and us for Voholabs Studio,
@@ -213,12 +213,60 @@ export default function TermsPage() {
         />
       </LegalSection>
 
-      <LegalSection id="paid" title="4. Paid features and Apex">
+      <LegalSection id="paid" title="4. Paid features, wallet credits and Apex">
         <p>
-          AI features (writing, image and video generation, the agent and the
-          brief) are not part of the free plan. They are available only as part
-          of Apex, the managed content service we sell at voholabs.com.
+          AI features (writing, image and video generation and the agent) are
+          not part of the free plan. They are available only as part of Apex,
+          the managed content service we sell at voholabs.com. Some other
+          features are paid from a prepaid wallet of credits, described below.
         </p>
+        <p>
+          <strong>Wallet credits.</strong> Some features, such as posting to
+          certain channels, storage above the free allowance, the brief
+          onboarding and skills, are paid from a prepaid wallet. You buy
+          credits by card through Stripe. The price of each paid action is
+          shown in Studio on the Prices page. We may change prices; a change
+          applies only to use after it.
+        </p>
+        <LegalList
+          items={[
+            <>
+              <strong>Credits are never refunded.</strong> Credits are
+              prepaid and non-refundable, in whole or in part, for any reason,
+              including if you stop using Studio, close your account, your
+              account is suspended or ended, or a feature or price changes,
+              except where the law requires otherwise.
+            </>,
+            <>
+              <strong>Credits expire after a year without activity.</strong>{' '}
+              If there is no activity in your wallet for 12 months in a row (no
+              top-up and no credits spent), the remaining balance expires and
+              is removed.
+            </>,
+            <>
+              <strong>Credits have no cash value.</strong> They can only be
+              used in Studio, by the organisation that bought them, and cannot
+              be sold or transferred.
+            </>,
+            <>
+              <strong>Usage already used is still owed.</strong> Some usage,
+              such as storage or channel analytics, can take your balance below
+              zero. You must top up to cover it before using paid features
+              again.
+            </>,
+            <>
+              <strong>Refunded or disputed payments.</strong> If a card payment
+              is refunded or disputed, we remove the credits it bought and may
+              put the wallet on hold.
+            </>,
+            <>
+              <strong>Auto top-up.</strong> If you turn it on, you authorise us
+              to charge your saved card the amount you chose whenever your
+              balance falls below your threshold, up to the monthly limit you
+              set, until you turn it off.
+            </>,
+          ]}
+        />
         <p>
           Apex is ordered, billed and cancelled through voholabs.com, with
           payment taken by Stripe. Apex fees, renewal, cancellation and refunds

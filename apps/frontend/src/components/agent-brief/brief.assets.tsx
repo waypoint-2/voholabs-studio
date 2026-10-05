@@ -3,7 +3,12 @@
 import { FC, useCallback, useRef, useState } from 'react';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+import {
+  openTopUpIfWalletRefused,
+  WALLET_INLINE_REQUEST,
+} from '@gitroom/frontend/components/wallet/wallet.bridge';
 import { useToaster } from '@gitroom/react/toaster/toaster';
+import { useBriefClassic } from '@gitroom/frontend/components/agent-brief/brief.classic';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import {
@@ -27,6 +32,7 @@ export const BriefAssets: FC<{
   onChange: (assets: BriefAsset[]) => void;
 }> = ({ assets, onChange }) => {
   const t = useT();
+  const classic = useBriefClassic();
   const fetch = useFetch();
   const toaster = useToaster();
   const { backendUrl, uploadDirectory } = useVariables() as any;
@@ -68,13 +74,23 @@ export const BriefAssets: FC<{
           form.append('file', file);
 
           const response = await fetch('/media/upload-simple', {
+            ...WALLET_INLINE_REQUEST,
             method: 'POST',
             body: form,
           });
 
+          // Not enough credits to store it: the top-up opens with the
+          // reason, and the rest of the files wait for it.
+          if (await openTopUpIfWalletRefused(response)) {
+            break;
+          }
+
           if (!response.ok) {
             toaster.show(
-              `${file.name} ${t('brief_asset_failed', 'could not be uploaded')}`,
+              t('brief_asset_failed_named', '{{name}} could not be uploaded', {
+                name: file.name,
+                interpolation: { escapeValue: false },
+              }),
               'warning'
             );
             continue;
@@ -107,7 +123,11 @@ export const BriefAssets: FC<{
           {current.map((asset) => (
             <div
               key={asset.id}
-              className="flex gap-[12px] rounded-[10px] border border-newTableBorder p-[10px] focus-within:border-warm transition-colors"
+              className={
+                classic
+                  ? 'flex gap-[12px] rounded-[10px] border border-newTableBorder p-[10px] focus-within:border-warm transition-colors'
+                  : 'flex gap-[12px] rounded-[10px] border border-newTableBorder p-[10px] focus-within:border-tealText transition-colors'
+              }
             >
               <div className="shrink-0 w-[72px] h-[72px] rounded-[8px] overflow-hidden bg-newBgColor flex items-center justify-center">
                 {isImage(asset) ? (
@@ -135,9 +155,13 @@ export const BriefAssets: FC<{
                     href={resolve(asset.url)}
                     target="_blank"
                     rel="noreferrer"
-                    className="flex-1 text-[13px] truncate hover:text-warm"
+                    className={
+                      classic
+                        ? 'flex-1 text-[13px] truncate hover:text-warm'
+                        : 'flex-1 text-[13px] truncate hover:text-tealText'
+                    }
                   >
-                    {asset.name}
+                    <bdi>{asset.name}</bdi>
                   </a>
                   <span
                     onClick={() =>
@@ -145,7 +169,11 @@ export const BriefAssets: FC<{
                     }
                     data-tooltip-id="tooltip"
                     data-tooltip-content={t('brief_asset_remove', 'Remove')}
-                    className="cursor-pointer select-none text-textItemBlur hover:text-warm"
+                    className={
+                      classic
+                        ? 'cursor-pointer select-none text-textItemBlur hover:text-warm'
+                        : 'cursor-pointer select-none text-textItemBlur hover:text-tealText'
+                    }
                   >
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
@@ -168,6 +196,7 @@ export const BriefAssets: FC<{
                   value={asset.note || ''}
                   maxLength={BRIEF_ASSET_NOTE_MAX}
                   rows={2}
+                  dir="auto"
                   onChange={(event) =>
                     update(
                       current.map((one) =>
@@ -203,7 +232,11 @@ export const BriefAssets: FC<{
           />
           <div
             onClick={() => !uploading && picker.current?.click()}
-            className="self-start cursor-pointer select-none flex items-center gap-[8px] rounded-[8px] border border-dashed border-newTableBorder px-[14px] h-[38px] text-[14px] text-textItemBlur hover:border-warm hover:text-warm hover:bg-warmHover transition-colors"
+            className={
+              classic
+                ? 'self-start cursor-pointer select-none flex items-center gap-[8px] rounded-[8px] border border-dashed border-newTableBorder px-[14px] h-[38px] text-[14px] text-textItemBlur hover:border-warm hover:text-warm hover:bg-warmHover transition-colors'
+                : 'self-start cursor-pointer select-none flex items-center gap-[8px] rounded-[8px] border border-dashed border-newTableBorder px-[14px] h-[38px] text-[14px] text-textItemBlur hover:border-tealText hover:text-tealText hover:bg-tealHover transition-colors'
+            }
           >
             <svg
               xmlns="http://www.w3.org/2000/svg"

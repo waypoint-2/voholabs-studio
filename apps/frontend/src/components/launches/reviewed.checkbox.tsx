@@ -34,7 +34,9 @@ export const ReviewedCheckbox: FC<{
   checked: boolean;
   onChange: (checked: boolean) => void;
   disabled?: boolean;
-}> = ({ checked, onChange, disabled }) => {
+  // Height override, e.g. to match the 44px buttons beside it.
+  className?: string;
+}> = ({ checked, onChange, disabled, className }) => {
   const t = useT();
 
   return (
@@ -46,7 +48,9 @@ export const ReviewedCheckbox: FC<{
         'Just a note to yourself — it does not change when or how the post goes out'
       )}
       className={clsx(
-        'flex items-center gap-[8px] h-[36px] px-[12px] rounded-[8px] border select-none transition-all',
+        `flex items-center gap-[8px] ${
+          className || 'h-[36px]'
+        } px-[12px] rounded-[8px] border select-none transition-all`,
         disabled
           ? 'opacity-50 cursor-not-allowed border-newTableBorder'
           : 'cursor-pointer',

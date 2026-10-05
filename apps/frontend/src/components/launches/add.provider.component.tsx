@@ -22,14 +22,31 @@ import { yupResolver } from '@hookform/resolvers/yup';
 import { web3List } from '@gitroom/frontend/components/launches/web3/web3.list';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
+import {
+  TONE_TEXT,
+  useActionTone,
+  useWalletAccess,
+} from '@gitroom/frontend/components/wallet-locks/wallet.access';
+import {
+  findAction,
+  useWalletFormat,
+  useWalletPrices,
+} from '@gitroom/frontend/components/wallet/wallet.hooks';
+import {
+  CoinsIcon,
+  LockIcon,
+} from '@gitroom/frontend/components/wallet-locks/wallet.icons';
+import { openTopUp } from '@gitroom/frontend/components/wallet/wallet.bridge';
 import clsx from 'clsx';
+import Link from 'next/link';
+import { Tooltip } from 'react-tooltip';
 import copy from 'copy-to-clipboard';
 import { capitalize } from 'lodash';
 const resolver = classValidatorResolver(ApiKeyDto);
 
 // Channels we currently support connecting. Everything else is shown as
 // "Coming soon" and is not clickable until its OAuth app is configured.
-const ENABLED_PROVIDERS = [
+export const ENABLED_PROVIDERS = [
   'youtube',
   'facebook',
   'instagram',
@@ -830,8 +847,8 @@ export const AddProviderComponent: FC<{
 
   const t = useT();
   const user = useUser();
-  // Temporarily unavailable on the free plan (the backend refuses them too)
-  const paidOnly = ['x', 'tiktok'];
+  // Temporarily unavailable on the free plan (the backend refuses it too)
+  const paidOnly = ['x'];
   const isFreePlan = user?.tier?.current === 'FREE';
 
   const filteredSocial = social.filter((item) => {
@@ -845,13 +862,55 @@ export const AddProviderComponent: FC<{
       !item.customFields
     );
   });
+  // X is pay-per-use from the wallet on the free plan: shown in the grid,
+  // locked until the first top-up. Paid plans connect it as before.
+  const walletAccess = useWalletAccess();
+  const walletWorkspace =
+    walletAccess === 'free' || walletAccess === 'payg';
+  const { data: prices } = useWalletPrices(walletWorkspace);
+  const walletFormat = useWalletFormat();
+  const xTone = useActionTone('x.post', 'warm', walletWorkspace);
+  const walletMode = (identifier: string) =>
+    identifier !== 'x' || !walletWorkspace
+      ? undefined
+      : walletAccess === 'free'
+      ? ('locked' as const)
+      : ('metered' as const);
+  // Hover text for a channel the wallet pays for: pay per use, what
+  // connecting costs (its `<provider>.user_lookup` row), and a pricing link.
+  const lookupPrice = (identifier: string) => {
+    const action = findAction(prices, `${identifier}.user_lookup`);
+    return action ? walletFormat.credits(action.price) : null;
+  };
+  const walletTip = (identifier: string, toolTip?: string) => {
+    const mode = walletMode(identifier);
+    if (!mode) {
+      return toolTip;
+    }
+    const name = filteredSocial.find((i) => i.identifier === identifier)?.name;
+    const price = lookupPrice(identifier);
+    return [
+      t('wallet_channel_pay_per_use', '{{channel}} is pay per use.', {
+        channel: name,
+      }),
+      mode === 'locked'
+        ? t('wallet_channel_top_up_to_connect', 'Top up to connect it.')
+        : price
+        ? t(
+            'wallet_channel_connect_cost',
+            'Connecting costs {{price}} credits.',
+            { price }
+          )
+        : '',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  };
   const isUnavailable = (identifier: string) =>
-    isFreePlan && paidOnly.includes(identifier);
+    isFreePlan &&
+    paidOnly.includes(identifier) &&
+    !walletMode(identifier);
   const unavailableReason: Record<string, string> = {
-    tiktok: t(
-      'tiktok_unavailable_reason',
-      'TikTok is paused while TikTok reviews an update to our connection. It will be back as soon as their review is complete.'
-    ),
     x: t(
       'x_unavailable_reason',
       'X now charges for every post sent through its API, and with high demand we can no longer offer it for free. A premium plan that includes X is coming soon. All other channels remain free.'
@@ -882,31 +941,69 @@ export const AddProviderComponent: FC<{
             isMobile ? {} : onboarding ? 'grid-cols-9' : 'grid-cols-5'
           )}
         >
-          {enabledSocial.map((item) => (
+          {enabledSocial.map((item) => {
+            const mode = walletMode(item.identifier);
+            const tip = walletTip(item.identifier, item.toolTip);
+            return (
               <div
                 key={item.identifier}
-                onClick={getSocialLink(
-                  props.invite,
-                  item.identifier,
-                  item.isExternal,
-                  item.isWeb3,
-                  item.isChromeExtension,
-                  item.customFields,
-                  item.customFieldsSetup
-                )}
-                {...(!!item.toolTip
+                onClick={
+                  mode === 'locked'
+                    ? () => {
+                        modal.closeAll();
+                        openTopUp(tip);
+                      }
+                    : getSocialLink(
+                        props.invite,
+                        item.identifier,
+                        item.isExternal,
+                        item.isWeb3,
+                        item.isChromeExtension,
+                        item.customFields,
+                        item.customFieldsSetup
+                      )
+                }
+                {...(!!tip
+                  ? mode
+                    ? {
+                        'data-tooltip-id': 'wallet-channel-tip',
+                        'data-tooltip-content': tip,
+                      }
+                    : {
+                        'data-tooltip-id': 'tooltip',
+                        'data-tooltip-content': tip,
+                      }
+                  : {})}
+                {...(mode === 'locked'
                   ? {
-                      'data-tooltip-id': 'tooltip',
-                      'data-tooltip-content': item.toolTip,
+                      role: 'button',
+                      'aria-label': tip ? `${item.name}. ${tip}` : item.name,
                     }
                   : {})}
                 className={clsx(
                   isMobile
                     ? 'flex-row h-[72px] p-[16px]'
                     : 'flex-col p-[10px] h-[100px] justify-center',
-                  'w-full text-[14px] rounded-[8px] bg-newTableHeader text-textColor relative items-center flex gap-[10px] cursor-pointer'
+                  'w-full text-[14px] rounded-[8px] bg-newTableHeader text-textColor relative items-center flex gap-[10px] cursor-pointer',
+                  // Pay-per-use marker: a thin warm ring, locked or not.
+                  !!mode && 'ring-1 ring-inset ring-warmRing',
+                  mode === 'locked' && '[&>div]:opacity-40 [&>div]:grayscale'
                 )}
               >
+                {!!mode && (
+                  <span
+                    className={clsx(
+                      'absolute top-[10px] end-[10px]',
+                      TONE_TEXT[xTone]
+                    )}
+                  >
+                    {mode === 'locked' ? (
+                      <LockIcon size={14} />
+                    ) : (
+                      <CoinsIcon size={15} />
+                    )}
+                  </span>
+                )}
                 <div>
                   {item.identifier === 'youtube' ? (
                     <img src={`/icons/platforms/youtube.svg`} />
@@ -928,7 +1025,7 @@ export const AddProviderComponent: FC<{
                   )}
                 >
                   {item.name}
-                  {!!item.toolTip && !isMobile && (
+                  {!!item.toolTip && !isMobile && !mode && (
                     <svg
                       width="15"
                       height="15"
@@ -945,8 +1042,28 @@ export const AddProviderComponent: FC<{
                   )}
                 </div>
               </div>
-            ))}
+            );
+          })}
         </div>
+        {walletWorkspace && (
+          <Tooltip
+            id="wallet-channel-tip"
+            clickable
+            className="z-[200] max-w-[280px]"
+            render={({ content }) => (
+              <div className="flex flex-col gap-[4px] text-[13px]">
+                <span>{content}</span>
+                <Link
+                  href="/wallet/prices"
+                  onClick={() => modal.closeAll()}
+                  className={clsx('font-[600] underline', TONE_TEXT[xTone])}
+                >
+                  {t('wallet_see_pricing', 'See pricing')}
+                </Link>
+              </div>
+            )}
+          />
+        )}
         {unavailableSocial.length > 0 && (
           <div className="flex flex-col gap-[10px]">
             <div className="text-[12px] font-[500] uppercase tracking-[0.08em] text-textColor/50">

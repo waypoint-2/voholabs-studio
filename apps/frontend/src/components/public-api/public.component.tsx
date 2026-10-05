@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, FC, ReactNode } from 'react';
+import { useState, useCallback, useEffect, useRef, FC, ReactNode } from 'react';
 import { useSWRConfig } from 'swr';
 import { useUser } from '../layout/user.context';
 import copy from 'copy-to-clipboard';
@@ -11,6 +11,8 @@ import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useDecisionModal } from '@gitroom/frontend/components/layout/new-modal';
 import { DeveloperComponent } from '@gitroom/frontend/components/developer/developer.component';
 import clsx from 'clsx';
+import { useWalletAccess } from '@gitroom/frontend/components/wallet-locks/wallet.access';
+import { LegacyPublicComponent } from '@gitroom/frontend/components/public-api/public.component.legacy';
 
 const mcpClients = [
   'Claude Code',
@@ -137,7 +139,7 @@ const CopyButton = ({
       className={clsx(
         'cursor-pointer px-[16px] h-[36px] transition-colors rounded-[8px] text-[13px] font-[600] flex items-center gap-[6px]',
         primary
-          ? 'bg-[#20808D] hover:bg-[#5520CB] text-white'
+          ? 'bg-btnPrimary hover:brightness-110 text-white'
           : 'bg-btnSimple hover:bg-boxHover'
       )}
     >
@@ -217,7 +219,7 @@ const SectionCard: FC<{
     <div className="bg-newBgColorInner px-[20px] py-[14px] border-b border-newBorder flex items-start justify-between gap-[12px]">
       <div>
         <div className="text-[15px] font-[600]">{title}</div>
-        <div className="text-[13px] text-customColor18 mt-[2px]">
+        <div className="text-[13px] text-textItemBlur mt-[2px]">
           {description}
         </div>
       </div>
@@ -231,7 +233,7 @@ const SectionCard: FC<{
 
 const DocsLink = ({ href, label }: { href: string; label: string }) => (
   <a
-    className="cursor-pointer px-[16px] h-[36px] bg-[#20808D] hover:bg-[#5520CB] text-white transition-colors rounded-[8px] text-[13px] font-[600] flex items-center gap-[6px]"
+    className="cursor-pointer px-[16px] h-[36px] bg-btnPrimary hover:brightness-110 text-white transition-colors rounded-[8px] text-[13px] font-[600] flex items-center gap-[6px]"
     href={href}
     target="_blank"
     rel="noreferrer"
@@ -271,8 +273,8 @@ const Tabs = <T extends string>({
         className={clsx(
           'cursor-pointer px-[14px] h-[36px] text-[13px] font-[500] rounded-[8px] transition-colors',
           value === option.value
-            ? 'bg-[#20808D] text-white'
-            : 'bg-btnSimple text-customColor18 hover:bg-boxHover hover:text-textColor'
+            ? 'bg-btnPrimary text-white'
+            : 'bg-btnSimple text-textItemBlur hover:bg-boxHover hover:text-textColor'
         )}
         onClick={() => onChange(option.value)}
       >
@@ -282,30 +284,308 @@ const Tabs = <T extends string>({
   </div>
 );
 
-const Step: FC<{ index: number; title: string; children?: ReactNode }> = ({
+const CopyIcon: FC<{ size?: number }> = ({ size = 14 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+    <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+  </svg>
+);
+
+const CheckIcon: FC<{ size?: number }> = ({ size = 14 }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M20 6 9 17l-5-5" />
+  </svg>
+);
+
+const ShieldIcon = () => (
+  <svg
+    className="shrink-0 text-tealText"
+    width="14"
+    height="14"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+  </svg>
+);
+
+// A small icon-only copy button, for values that sit inside a row.
+const CopyIconButton = ({ text, label }: { text: string; label: string }) => {
+  const t = useT();
+  const toaster = useToaster();
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        copy(text);
+        toaster.show(t('agent_copied', 'Copied to clipboard'), 'success');
+      }}
+      className="shrink-0 w-[32px] h-[32px] rounded-[8px] flex items-center justify-center text-textItemBlur hover:text-newTextColor hover:bg-boxHover transition-colors"
+    >
+      <CopyIcon />
+    </button>
+  );
+};
+
+// A UI path inside a sentence, e.g. Settings › Connectors.
+const PathChip: FC<{ children: ReactNode }> = ({ children }) => (
+  <span className="px-[7px] py-[2px] mx-[2px] rounded-[6px] bg-btnSimple border border-newBorder text-[12px] font-[600] text-newTextColor whitespace-normal [box-decoration-break:clone] [-webkit-box-decoration-break:clone]">
+    {children}
+  </span>
+);
+
+const ShortStep: FC<{ index: number; children: ReactNode }> = ({
   index,
-  title,
   children,
 }) => (
-  <div className="flex gap-[12px]">
-    <div className="shrink-0 w-[24px] h-[24px] rounded-full bg-[#20808D] text-white text-[12px] font-[600] flex items-center justify-center">
+  <li className="flex gap-[12px] items-start">
+    <span className="shrink-0 w-[24px] h-[24px] rounded-full bg-tealSoft text-tealText text-[12px] font-[700] flex items-center justify-center">
       {index}
-    </div>
-    <div className="flex flex-col gap-[8px] flex-1 min-w-0">
-      <div className="text-[14px] font-[600] leading-[24px]">{title}</div>
+    </span>
+    <div className="flex-1 min-w-0 flex flex-col gap-[8px] text-[14px] leading-[24px]">
       {children}
     </div>
+  </li>
+);
+
+const SubLine: FC<{ children: ReactNode }> = ({ children }) => (
+  <div className="text-[12px] leading-[22px] text-textItemBlur -mt-[4px]">
+    {children}
   </div>
 );
 
-const StepText: FC<{ children: ReactNode }> = ({ children }) => (
-  <div className="text-[13px] text-customColor18 leading-[1.7]">{children}</div>
+// The fields to type into the chat app's "add connector" form.
+const FieldsCard = ({
+  rows,
+}: {
+  rows: { label: string; value: string; copyText?: string; hint?: boolean }[];
+}) => {
+  const t = useT();
+  return (
+    <div className="rounded-[10px] border border-newBorder bg-newBgColorInner divide-y divide-newBorder">
+      {rows.map((row) => (
+        <div
+          key={row.label}
+          className="flex items-center gap-[12px] ps-[14px] pe-[6px] min-h-[44px] py-[4px]"
+        >
+          <span className="w-[96px] sm:w-[128px] shrink-0 text-[12px] text-textItemBlur">
+            {row.label}
+          </span>
+          <span
+            className={clsx(
+              'flex-1 min-w-0 text-[13px] break-words',
+              row.hint ? 'text-textItemBlur' : 'font-[600]'
+            )}
+          >
+            {row.value}
+          </span>
+          {row.copyText ? (
+            <CopyIconButton
+              text={row.copyText}
+              label={t('agent_copy_value', 'Copy')}
+            />
+          ) : (
+            <span className="w-[32px] shrink-0" />
+          )}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const TRY_IT_PROMPT_DEFAULT =
+  'List my Voholabs Studio channels, then schedule a post for tomorrow at 9am about our new feature.';
+
+const TryItBox = () => {
+  const t = useT();
+  const prompt = t('agent_try_it_prompt', TRY_IT_PROMPT_DEFAULT);
+  return (
+    <div className="flex flex-col gap-[6px]">
+      <div className="text-[13px] font-[600]">
+        {t('agent_try_it', 'Try it: ask your agent')}
+      </div>
+      <div className="flex items-center gap-[8px] rounded-[10px] border border-newBorder bg-tealHover ps-[14px] pe-[6px] py-[6px]">
+        <span className="flex-1 min-w-0 text-[13px] leading-[1.6]">
+          {prompt}
+        </span>
+        <CopyIconButton
+          text={prompt}
+          label={t('agent_copy_prompt', 'Copy prompt')}
+        />
+      </div>
+    </div>
+  );
+};
+
+// Collapsed by default: everything that is useful but not needed to connect.
+const MoreHelp: FC<{ title: string; children: ReactNode }> = ({
+  title,
+  children,
+}) => (
+  <details className="group rounded-[10px] border border-newBorder bg-newBgColorInner">
+    <summary className="list-none [&::-webkit-details-marker]:hidden cursor-pointer select-none flex items-center justify-between gap-[8px] px-[14px] min-h-[44px] text-[13px] font-[600] text-textItemBlur hover:text-newTextColor">
+      {title}
+      <svg
+        className="shrink-0 transition-transform group-open:rotate-180"
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="m6 9 6 6 6-6" />
+      </svg>
+    </summary>
+    <div className="px-[14px] pb-[14px] flex flex-col gap-[10px] text-[13px] leading-[1.7] text-textItemBlur">
+      {children}
+    </div>
+  </details>
 );
 
-const Field = ({ label, value }: { label: string; value: string }) => (
-  <div className="flex gap-[8px] text-[13px] leading-[1.7]">
-    <span className="text-customColor18 shrink-0">{label}</span>
-    <span className="font-[600] break-all">{value}</span>
+const HelpLink = ({ href, label }: { href: string; label: string }) => (
+  <a
+    href={href}
+    target="_blank"
+    rel="noreferrer"
+    className="self-start font-[600] text-tealText hover:underline"
+  >
+    {label}
+  </a>
+);
+
+// The one thing to do first: copy the link. Shown masked, with the short
+// security line always visible.
+const ConnectorLinkBlock = ({
+  connectorUrl,
+  apiKey,
+  revealed,
+  onToggleReveal,
+}: {
+  connectorUrl: string;
+  apiKey: string;
+  revealed: boolean;
+  onToggleReveal: () => void;
+}) => {
+  const t = useT();
+  const toaster = useToaster();
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  const onCopy = () => {
+    copy(connectorUrl);
+    toaster.show(
+      t('agent_link_copied_toast', 'Connector link copied to clipboard'),
+      'success'
+    );
+    setCopied(true);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setCopied(false), 2000);
+  };
+
+  return (
+    <div className="flex flex-col gap-[10px] rounded-[12px] border border-newBorder bg-newBgColorInner p-[16px]">
+      <button
+        type="button"
+        onClick={onCopy}
+        className="w-full sm:w-auto sm:self-start h-[48px] px-[24px] rounded-[10px] bg-btnPrimary hover:brightness-110 transition-all text-white text-[15px] font-[600] flex items-center justify-center gap-[10px]"
+      >
+        {copied ? <CheckIcon size={16} /> : <CopyIcon size={16} />}
+        {copied
+          ? t('agent_link_copied', 'Link copied')
+          : t('agent_copy_connector_link', 'Copy your connector link')}
+      </button>
+      <div className="flex items-center gap-[10px] min-w-0">
+        <code
+          dir="ltr"
+          className={clsx(
+            'flex-1 min-w-0 text-[12px] text-textItemBlur',
+            revealed ? 'break-all' : 'truncate'
+          )}
+        >
+          {revealed ? connectorUrl : maskKey(connectorUrl, apiKey)}
+        </code>
+        <button
+          type="button"
+          onClick={onToggleReveal}
+          className="shrink-0 text-[12px] font-[600] text-tealText hover:underline"
+        >
+          {revealed ? t('hide', 'Hide') : t('reveal', 'Reveal')}
+        </button>
+      </div>
+      <div className="flex items-center gap-[8px] text-[12px] text-textItemBlur">
+        <ShieldIcon />
+        {t(
+          'agent_link_private',
+          'This link is private: it can post to your channels.'
+        )}
+      </div>
+    </div>
+  );
+};
+
+const ConnectTabs = ({
+  value,
+  onChange,
+  options,
+}: {
+  value: ConnectTarget;
+  onChange: (value: ConnectTarget) => void;
+  options: { value: ConnectTarget; label: string }[];
+}) => (
+  <div
+    role="tablist"
+    className="flex w-full sm:w-auto sm:self-start gap-[4px] p-[4px] rounded-[10px] bg-btnSimple"
+  >
+    {options.map((option) => (
+      <button
+        key={option.value}
+        type="button"
+        role="tab"
+        aria-selected={value === option.value}
+        onClick={() => onChange(option.value)}
+        className={clsx(
+          'flex-1 sm:flex-none px-[16px] h-[36px] rounded-[8px] text-[13px] font-[600] transition-colors whitespace-nowrap',
+          value === option.value
+            ? 'bg-btnPrimary text-white'
+            : 'text-textItemBlur hover:text-newTextColor'
+        )}
+      >
+        {option.label}
+      </button>
+    ))}
   </div>
 );
 
@@ -317,10 +597,13 @@ const ConnectSection = ({
   apiKey,
   mcpBase,
   cloudflareUrl,
+  bare,
 }: {
   apiKey: string;
   mcpBase: string;
   cloudflareUrl: string;
+  // Without the card and its heading, for the onboarding step that has its own.
+  bare?: boolean;
 }) => {
   const t = useT();
   const [target, setTarget] = useState<ConnectTarget>('claude');
@@ -332,7 +615,7 @@ const ConnectSection = ({
   const { config, hint } = getMcpConfig(activeClient, mcpBase, apiKey);
 
   // Agent sandboxes allowlist outbound hosts, so both directions fail until
-  // the host is added — see the "allow the domains" step below. Uploading a
+  // the host is added (Claude's step 4 below). Uploading a
   // local file goes to us; reading a photo or video back comes from wherever
   // media is stored, which is a different host when that is object storage.
   const hostOf = (url: string) => {
@@ -365,88 +648,28 @@ const ConnectSection = ({
       ? 'https://developers.openai.com/api/docs/guides/developer-mode'
       : 'https://docs.postiz.com/mcp/introduction';
 
-  // Uploading a local file is the one flow where the assistant itself has to
-  // reach us over the network, and both Claude and ChatGPT block that until the
-  // domain is permitted — so it gets its own step rather than a footnote.
-  const allowlistStep = (index: number, detail: string, hint: string) => (
-    <Step
-      index={index}
-      title={
-        allowlistHosts.length > 1
-          ? t(
-              'to_send_and_read_files_allow_the_domains',
-              'To send and read back files, allow these domains'
-            )
-          : t(
-              'allow_uploads_from_your_computer',
-              'To post files from your computer, allow the domain'
-            )
-      }
-    >
-      <StepText>{detail}</StepText>
-      <CodeBlock>{allowlistHosts.join('\n')}</CodeBlock>
-      <div className="flex gap-[8px] flex-wrap">
-        <CopyButton
-          text={allowlistHosts.join('\n')}
-          label={
-            allowlistHosts.length > 1
-              ? t('copy_domains', 'Copy domains')
-              : t('copy_domain', 'Copy domain')
-          }
-        />
-      </div>
-      {allowlistHosts.length > 1 && (
-        <StepText>
-          {t(
-            'allowlist_two_domains_why',
-            'Both are needed and they do different jobs: the first is Voholabs Studio itself, which is where a file you upload goes. The second is where your photos and videos are kept, and it is the one that lets the assistant open an image or video already in your library — to look at it, or to attach it to a post it is drafting. Allow only the first and uploads work while your existing media stays unreadable.'
-          )}
-        </StepText>
-      )}
-      <StepText>{hint}</StepText>
-    </Step>
+  const securityDetail = t(
+    'agent_link_security_full',
+    'This link contains your API key. Anyone who has it can read and publish to your channels. Only paste it into your own Claude or ChatGPT settings, never into a shared chat or document. If it leaks, rotate your API key in Settings and add the connector again.'
   );
 
-  const linkStep = (index: number) => (
-    <Step
-      index={index}
-      title={t('copy_your_connector_link', 'Copy your private connector link')}
-    >
-      <CodeBlock>
-        {revealed ? connectorUrl : maskKey(connectorUrl, apiKey)}
-      </CodeBlock>
-      <div className="flex gap-[8px] flex-wrap">
-        <CopyButton
-          text={connectorUrl}
-          label={t('copy_link', 'Copy link')}
-          primary={true}
-        />
-        <RevealButton
-          revealed={revealed}
-          onClick={() => setRevealed(!revealed)}
-        />
-      </div>
-    </Step>
+  const linkBlock = (
+    <ConnectorLinkBlock
+      connectorUrl={connectorUrl}
+      apiKey={apiKey}
+      revealed={revealed}
+      onToggleReveal={() => setRevealed(!revealed)}
+    />
   );
 
-  return (
-    <SectionCard
-      title={t('connect_an_ai_agent', 'Connect an AI agent')}
-      description={t(
-        'connect_an_ai_agent_description',
-        'Let Claude, ChatGPT or your coding agent write and schedule posts for you. No installation needed.'
-      )}
-      actions={<DocsLink href={docsHref} label={t('read_the_docs', 'Docs')} />}
-    >
-      <Tabs<ConnectTarget>
+  const content = (
+    <div className="flex flex-col gap-[20px]">
+      <ConnectTabs
         value={target}
         onChange={setTarget}
         options={[
-          {
-            value: 'claude',
-            label: t('claude_cowork', 'Claude (Cowork)'),
-          },
-          { value: 'chatgpt', label: t('chatgpt_work', 'ChatGPT (Work)') },
+          { value: 'claude', label: t('agent_tab_claude', 'Claude') },
+          { value: 'chatgpt', label: t('agent_tab_chatgpt', 'ChatGPT') },
           {
             value: 'developer',
             label: t('developer_tools', 'Developer tools'),
@@ -455,165 +678,234 @@ const ConnectSection = ({
       />
 
       {target === 'claude' && (
-        <div className="flex flex-col gap-[20px]">
-          <StepText>
-            {t(
-              'claude_connector_intro',
-              'Connectors live in your Claude account, so adding this once turns it on everywhere you use Claude — Cowork, the desktop app, claude.ai and mobile.'
-            )}
-          </StepText>
-          {linkStep(1)}
-          <Step
-            index={2}
-            title={t('open_claude_connectors', 'Open the connector settings')}
-          >
-            <StepText>
+        <>
+          {linkBlock}
+          <ol className="flex flex-col gap-[16px]">
+            <ShortStep index={1}>
+              <div>
+                {t('agent_claude_step_open', 'Open')}{' '}
+                <PathChip>
+                  {t(
+                    'agent_claude_path',
+                    'Settings › Connectors › Add custom connector'
+                  )}
+                </PathChip>
+              </div>
+              <SubLine>
+                {t('agent_claude_in_cowork', 'In Cowork:')}{' '}
+                <PathChip>
+                  {t('agent_claude_cowork_path', 'Customize › Connectors › +')}
+                </PathChip>
+              </SubLine>
+            </ShortStep>
+            <ShortStep index={2}>
+              <div>
+                {t('agent_claude_step_fill', 'Fill in these two fields, then click Add')}
+              </div>
+              <FieldsCard
+                rows={[
+                  {
+                    label: t('agent_field_name', 'Name'),
+                    value: CONNECTOR_NAME,
+                    copyText: CONNECTOR_NAME,
+                  },
+                  {
+                    label: t('agent_field_url', 'URL'),
+                    value: t('agent_paste_link', 'Paste the link you copied'),
+                    hint: true,
+                  },
+                ]}
+              />
+            </ShortStep>
+            <ShortStep index={3}>
+              <div>
+                {t('agent_claude_step_turn_on', 'In a chat, switch it on:')}{' '}
+                <PathChip>
+                  {t(
+                    'agent_claude_chat_path',
+                    '+ › Connectors › Voholabs Studio'
+                  )}
+                </PathChip>
+              </div>
+            </ShortStep>
+            <ShortStep index={4}>
+              <div className="font-[600]">
+                {t(
+                  'agent_claude_step_allowlist',
+                  "Allow Studio's file domains"
+                )}
+              </div>
+              <div>
+                {t('agent_claude_allowlist_in', 'In Claude:')}{' '}
+                <PathChip>
+                  {t(
+                    'agent_claude_allowlist_path',
+                    'Settings › Capabilities › Domain allowlist'
+                  )}
+                </PathChip>
+                {allowlistHosts.length > 1
+                  ? t('agent_claude_allowlist_add_both', ', add both:')
+                  : t('agent_claude_allowlist_add_one', ', add:')}
+              </div>
+              <div className="flex items-start gap-[8px]">
+                <div className="flex-1 min-w-0">
+                  <CodeBlock>{allowlistHosts.join('\n')}</CodeBlock>
+                </div>
+                <CopyIconButton
+                  text={allowlistHosts.join('\n')}
+                  label={
+                    allowlistHosts.length > 1
+                      ? t('copy_domains', 'Copy domains')
+                      : t('copy_domain', 'Copy domain')
+                  }
+                />
+              </div>
+              <SubLine>
+                {t(
+                  'agent_claude_allowlist_why',
+                  "Without this, Claude can't send or open your images and videos."
+                )}
+              </SubLine>
+            </ShortStep>
+          </ol>
+          <TryItBox />
+          <MoreHelp title={t('agent_more_help', 'More help')}>
+            <div>
               {t(
-                'open_claude_connectors_detail',
-                'In Cowork: click Customize at the top right, then Connectors, then the + button. In the Claude desktop app or on claude.ai: Settings → Connectors → Add custom connector.'
+                'claude_connector_intro',
+                'Connectors live in your Claude account, so adding this once turns it on everywhere you use Claude — Cowork, the desktop app, claude.ai and mobile.'
               )}
-            </StepText>
-          </Step>
-          <Step
-            index={3}
-            title={t('fill_in_two_fields', 'Fill in the two fields')}
-          >
-            <Field label={t('name_label', 'Name:')} value={CONNECTOR_NAME} />
-            <Field
-              label={t('url_label', 'URL:')}
-              value={t('paste_the_link_you_copied', 'paste the link you copied')}
-            />
-            <StepText>
+            </div>
+            <div>
               {t(
                 'leave_advanced_settings_empty',
                 'Leave "Advanced settings" (OAuth Client ID and Secret) empty — the link already signs you in. Click Add, and Claude will connect straight away.'
               )}
-            </StepText>
-          </Step>
-          <Step
-            index={4}
-            title={t('turn_it_on_in_your_chat', 'Turn it on in your chat')}
-          >
-            <StepText>
-              {t(
-                'turn_it_on_in_your_chat_detail',
-                'Open the + button next to the message box, choose Connectors, and switch on Voholabs Studio.'
-              )}
-            </StepText>
-          </Step>
-          <Step index={5} title={t('ask_it_to_post', 'Ask it to post')}>
-            <StepText>
-              {t(
-                'ask_it_to_post_detail',
-                'Try: "List my Voholabs Studio channels, then schedule a post for tomorrow at 9am about our new feature."'
-              )}
-            </StepText>
-          </Step>
-          {allowlistStep(
-            6,
-            t(
-              'allow_uploads_from_your_computer_detail',
-              'Claude blocks its own outgoing connections by default, so sending it a photo or video — and opening one already in your library — fails until you allow these. In Claude: Settings → Capabilities → domain allowlist → add both:'
-            ),
-            t(
-              'allow_uploads_from_your_computer_hint',
-              'Skip this if you only post text, or images Claude generates or finds online. If Claude ever says it cannot reach Voholabs Studio, cannot open one of your own images or videos, or offers to put your file on another website first, this is the setting to change.'
-            )
-          )}
-        </div>
+            </div>
+            <div>{securityDetail}</div>
+            <HelpLink
+              href={docsHref}
+              label={t('agent_claude_docs', 'Claude help: custom connectors')}
+            />
+          </MoreHelp>
+        </>
       )}
 
       {target === 'chatgpt' && (
-        <div className="flex flex-col gap-[20px]">
-          <StepText>
-            {t(
-              'chatgpt_connector_intro',
-              'ChatGPT needs developer mode to add a connector of your own. It is on Plus, Pro, Business, Enterprise and Edu, and only on the web — the phone apps cannot add one.'
-            )}
-          </StepText>
-          {linkStep(1)}
-          <Step
-            index={2}
-            title={t('turn_on_developer_mode', 'Turn on developer mode')}
-          >
-            <StepText>
+        <>
+          {linkBlock}
+          <ol className="flex flex-col gap-[16px]">
+            <ShortStep index={1}>
+              <div>
+                {t('agent_chatgpt_step_dev_mode', 'Turn on developer mode:')}{' '}
+                <PathChip>
+                  {t(
+                    'agent_chatgpt_dev_mode_path',
+                    'Settings › Security and login › Developer mode'
+                  )}
+                </PathChip>
+              </div>
+              <SubLine>
+                {t(
+                  'agent_chatgpt_web_only',
+                  'On the web only, on Plus, Pro, Business, Enterprise or Edu.'
+                )}
+              </SubLine>
+            </ShortStep>
+            <ShortStep index={2}>
+              <div>
+                {t('agent_chatgpt_step_open', 'Open')}{' '}
+                <PathChip>{t('agent_chatgpt_plugins_path', 'Plugins › +')}</PathChip>{' '}
+                {t('agent_chatgpt_step_open_end', 'and add a remote MCP server')}
+              </div>
+            </ShortStep>
+            <ShortStep index={3}>
+              <div>
+                {t('agent_chatgpt_step_fill', 'Fill in these fields, then save')}
+              </div>
+              <FieldsCard
+                rows={[
+                  {
+                    label: t('agent_field_name', 'Name'),
+                    value: CONNECTOR_NAME,
+                    copyText: CONNECTOR_NAME,
+                  },
+                  {
+                    label: t('agent_field_mcp_url', 'MCP Server URL'),
+                    value: t('agent_paste_link', 'Paste the link you copied'),
+                    hint: true,
+                  },
+                  {
+                    label: t('agent_field_auth', 'Authentication'),
+                    value: t('no_authentication', 'No authentication'),
+                  },
+                ]}
+              />
+            </ShortStep>
+          </ol>
+          <TryItBox />
+          <MoreHelp title={t('agent_more_help', 'More help')}>
+            <div>
               {t(
-                'turn_on_developer_mode_detail',
-                'On the web: Settings → Security and login → switch on Developer mode. On a work plan the switch only appears once an admin has allowed it, so ask yours if it is missing.'
+                'chatgpt_connector_intro',
+                'ChatGPT needs developer mode to add a connector of your own. It is on Plus, Pro, Business, Enterprise and Edu, and only on the web — the phone apps cannot add one.'
               )}
-            </StepText>
-          </Step>
-          <Step
-            index={3}
-            title={t('create_the_connector', 'Create the connector')}
-          >
-            <StepText>
+            </div>
+            <div>
               {t(
-                'create_the_connector_detail',
-                'Open Plugins, press the + button, and choose to add a remote MCP server. Then fill in:'
+                'agent_chatgpt_admin_note',
+                'On a work plan the Developer mode switch only appears once an admin has allowed it, so ask yours if it is missing.'
               )}
-            </StepText>
-            <Field label={t('name_label', 'Name:')} value={CONNECTOR_NAME} />
-            <Field
-              label={t('mcp_server_url_label', 'MCP Server URL:')}
-              value={t('paste_the_link_you_copied', 'paste the link you copied')}
-            />
-            <Field
-              label={t('authentication_label', 'Authentication:')}
-              value={t('no_authentication', 'No authentication')}
-            />
-            <StepText>
+            </div>
+            <div>
               {t(
                 'no_authentication_is_correct',
                 '"No authentication" is the right choice here, even though it sounds wrong: your link already carries the key that signs you in, and ChatGPT has no field to put one in separately. Treat the link like a password — anyone holding it can post as you.'
               )}
-            </StepText>
-            <StepText>
+            </div>
+            <div>
               {t(
                 'chatgpt_ready_after_saving',
                 'Save it and you are done. Start a chat and ask it to list your channels or schedule a post — there is nothing else to switch on.'
               )}
-            </StepText>
-          </Step>
+            </div>
+            <div>{securityDetail}</div>
+            <HelpLink
+              href={docsHref}
+              label={t('agent_chatgpt_docs', 'ChatGPT help: developer mode')}
+            />
+          </MoreHelp>
           {/*
             Creating the connector is the last thing anyone has to do: it is
             usable straight away, with no per-chat step and nothing to
             allowlist. Claude needs hosts permitted because it runs tools in a
-            sandbox; ChatGPT reaches us from its own infrastructure, so the
-            equivalent step here only sent people looking for settings that do
-            not exist.
+            sandbox; ChatGPT reaches us from its own infrastructure, so there
+            is no images section here.
           */}
-        </div>
+        </>
       )}
 
       {target === 'developer' && (
-        <div className="flex flex-col gap-[16px]">
-          <StepText>
+        <>
+          <div className="text-[13px] text-textItemBlur leading-[1.7]">
             {t(
               'developer_tools_intro',
               'These clients send your key in an Authorization header, so it stays out of the URL. Pick your client and paste the config.'
             )}
-          </StepText>
-          <div className="flex flex-col gap-[6px]">
-            <div className="text-[13px] font-[600] text-customColor18">
-              {t('mcp_client', 'Client')}
-            </div>
-            <Tabs<McpClient>
-              value={activeClient}
-              onChange={setActiveClient}
-              options={mcpClients.map((client) => ({
-                value: client,
-                label: client,
-              }))}
-            />
           </div>
+          <Tabs<McpClient>
+            value={activeClient}
+            onChange={setActiveClient}
+            options={mcpClients.map((client) => ({
+              value: client,
+              label: client,
+            }))}
+          />
           <div className="flex flex-col gap-[8px]">
-            <div className="text-[12px] text-customColor18 font-[500]">
+            <div className="text-[12px] text-textItemBlur font-[500]">
               {hint}
             </div>
-            <CodeBlock>
-              {revealed ? config : maskKey(config, apiKey)}
-            </CodeBlock>
+            <CodeBlock>{revealed ? config : maskKey(config, apiKey)}</CodeBlock>
             <div className="flex gap-[8px] flex-wrap">
               <CopyButton
                 text={config}
@@ -630,32 +922,29 @@ const ConnectSection = ({
               />
             </div>
           </div>
-        </div>
+          <HelpLink
+            href={docsHref}
+            label={t('agent_mcp_docs', 'MCP documentation')}
+          />
+        </>
       )}
+    </div>
+  );
 
-      {target !== 'developer' && (
-        <div className="flex gap-[10px] text-[13px] leading-[1.7] bg-newBgColorInner border border-newBorder rounded-[8px] p-[14px]">
-          <svg
-            className="shrink-0 mt-[3px] text-[#20808D]"
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-          </svg>
-          <div>
-            {t(
-              'connector_link_security_note',
-              'This link contains your API key — anyone who has it can read and publish to your channels. Only paste it into your own Claude or ChatGPT settings, and never into a shared chat or document. If it leaks, rotate your API key below and add the connector again.'
-            )}
-          </div>
-        </div>
+  if (bare) {
+    return content;
+  }
+
+  return (
+    <SectionCard
+      title={t('connect_an_ai_agent', 'Connect an AI agent')}
+      description={t(
+        'connect_an_ai_agent_description',
+        'Let Claude, ChatGPT or your coding agent write and schedule posts for you. No installation needed.'
       )}
+      actions={<DocsLink href={docsHref} label={t('read_the_docs', 'Docs')} />}
+    >
+      {content}
     </SectionCard>
   );
 };
@@ -895,7 +1184,34 @@ const PublicApiContent = () => {
   );
 };
 
-export const PublicComponent = () => {
+// The "Connect an AI agent" panel on its own, for the onboarding step.
+// Nothing shows without an API key. `bare` drops the card and its heading.
+export const ConnectAgentPanel: FC<{ bare?: boolean }> = ({ bare }) => {
+  const user = useUser();
+  const { backendUrl, mcpUrl, cloudflareUrl } = useVariables();
+  if (!user?.publicApi) {
+    return null;
+  }
+  return (
+    <ConnectSection
+      apiKey={user.publicApi}
+      mcpBase={mcpUrl || backendUrl}
+      cloudflareUrl={cloudflareUrl}
+      bare={bare}
+    />
+  );
+};
+
+// A paid plan keeps the panel it always had; every other plan gets the new
+// connect-agent panel, the same one onboarding shows.
+export const PublicComponent = () =>
+  useWalletAccess() === 'plan' ? (
+    <LegacyPublicComponent />
+  ) : (
+    <WalletPublicComponent />
+  );
+
+const WalletPublicComponent = () => {
   const t = useT();
   const [subTab, setSubTab] = useState<'api' | 'developer'>('api');
 
@@ -909,7 +1225,7 @@ export const PublicComponent = () => {
             className={clsx(
               'cursor-pointer px-[20px] h-[44px] text-[15px] font-[600] rounded-[8px] transition-colors',
               subTab === tab
-                ? 'bg-[#20808D] text-white'
+                ? 'bg-btnPrimary text-white'
                 : 'bg-btnSimple text-customColor18 hover:bg-boxHover hover:text-textColor'
             )}
             onClick={() => setSubTab(tab)}

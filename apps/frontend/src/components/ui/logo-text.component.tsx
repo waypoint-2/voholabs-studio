@@ -10,6 +10,10 @@ export const LogoTextComponent = () => {
       xmlns="http://www.w3.org/2000/svg"
       role="img"
       aria-label="Voholabs Studio"
+      // The wordmark is drawn from x=430 to the right; an RTL page would
+      // anchor the text at its end and draw it over the icon.
+      direction="ltr"
+      style={{ direction: 'ltr' }}
     >
       <rect x="0" y="0" width="340" height="330" rx="58" fill="#FAF9F5" />
       <rect
@@ -29,6 +33,8 @@ export const LogoTextComponent = () => {
         fontSize="200"
         fill="currentColor"
         letterSpacing="-0.02em"
+        direction="ltr"
+        textAnchor="start"
       >
         voholabs studio
       </text>

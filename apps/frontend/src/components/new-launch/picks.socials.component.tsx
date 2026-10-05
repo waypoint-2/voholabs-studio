@@ -9,9 +9,11 @@ import { useExistingData } from '@gitroom/frontend/components/launches/helpers/u
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import ImageWithFallback from '@gitroom/react/helpers/image.with.fallback';
 
-export const PicksSocialsComponent: FC<{ toolTip?: boolean }> = ({
-  toolTip,
-}) => {
+export const PicksSocialsComponent: FC<{
+  toolTip?: boolean;
+  // Overrides the tooltip text per channel (e.g. a channel that charges).
+  toolTipFor?: (integration: { identifier: string; name: string }) => string;
+}> = ({ toolTip, toolTipFor }) => {
   const exising = useExistingData();
 
   const {
@@ -46,7 +48,9 @@ export const PicksSocialsComponent: FC<{ toolTip?: boolean }> = ({
                   className="flex gap-[8px] items-center"
                   {...(toolTip && {
                     'data-tooltip-id': 'tooltip',
-                    'data-tooltip-content': integration.name,
+                    'data-tooltip-content': toolTipFor
+                      ? toolTipFor(integration)
+                      : integration.name,
                   })}
                 >
                   <div

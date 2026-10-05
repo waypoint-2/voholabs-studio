@@ -1,5 +1,6 @@
 'use client';
 
+import { useFireEvents, useTrackView } from '@gitroom/helpers/utils/use.fire.events';
 import React, { FC, useCallback, useState } from 'react';
 import { FormProvider, SubmitHandler, useForm } from 'react-hook-form';
 import { classValidatorResolver } from '@hookform/resolvers/class-validator';
@@ -82,6 +83,8 @@ export const RequiredOnboarding: FC<{
   const t = useT();
   const fetch = useFetch();
   const [loading, setLoading] = useState(false);
+  const fireEvents = useFireEvents();
+  useTrackView('onboarding_step', { step: 'profile_form' });
   const form = useForm<Inputs>({
     resolver,
     defaultValues: {
@@ -118,6 +121,7 @@ export const RequiredOnboarding: FC<{
     setLoading(false);
 
     if (response.ok) {
+      fireEvents('onboarding_step', { step: 'profile_done', role: data.role, heard_from: data.heardFrom, use_case: data.useCase }, { send_instantly: true });
       onDone();
       return;
     }

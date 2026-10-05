@@ -1,3 +1,5 @@
+import { HttpException } from '@nestjs/common';
+import { topUpUrl } from '@gitroom/nestjs-libraries/chat/tools/wallet.shared';
 import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { getMaxSize } from '@gitroom/nestjs-libraries/upload/custom.upload.validation';
@@ -54,6 +56,15 @@ export const storeBufferAsMedia = async (params: {
   try {
     await mediaService.assertStorage(organizationId, buffer.length);
   } catch (err) {
+    // A wallet that cannot pay for the storage says so (and where to top
+    // up); anything else is the plan's cap.
+    const body =
+      err instanceof HttpException ? (err.getResponse() as any) : undefined;
+    if (body?.wallet) {
+      return {
+        error: `${body.message} Top up: ${topUpUrl()}`,
+      };
+    }
     return {
       error:
         'The media library is full. Delete files that are no longer needed, or upgrade for more storage.',

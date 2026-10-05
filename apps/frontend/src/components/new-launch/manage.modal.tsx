@@ -1,5 +1,6 @@
 'use client';
 
+import { useFireEvents, postEventName, postEventProps } from '@gitroom/helpers/utils/use.fire.events';
 import React, {
   FC,
   ReactNode,
@@ -47,6 +48,19 @@ import { useShortlinkPreference } from '@gitroom/frontend/components/settings/sh
 import dayjs from 'dayjs';
 import { Button } from '@gitroom/react/form/button';
 import { ReviewedCheckbox } from '@gitroom/frontend/components/launches/reviewed.checkbox';
+import {
+  useRefreshWallet,
+  useWalletFormat,
+} from '@gitroom/frontend/components/wallet/wallet.hooks';
+import {
+  useComposerWalletCost,
+  useWalletAvatarTip,
+  walletBlocksSchedule,
+  WalletCostLine,
+  WalletCostMode,
+  WalletLockHint,
+} from '@gitroom/frontend/components/new-launch/wallet.cost.line';
+import { useWalletAccess } from '@gitroom/frontend/components/wallet-locks/wallet.access';
 
 export const ManageModal: FC<AddEditModalProps> = (props) => {
   const t = useT();
@@ -218,6 +232,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
     }
   }, [activateExitButton, dummy]);
 
+  const refreshWallet = useRefreshWallet();
   const deletePost = useCallback(async () => {
     setLoading(true);
     if (
@@ -236,9 +251,42 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
       method: 'DELETE',
     });
     mutate();
+    refreshWallet();
     modal.closeAll();
     return;
-  }, [existingData, mutate, modal]);
+  }, [existingData, mutate, modal, refreshWallet]);
+
+  // Wallet workspaces: what the post costs, for the footer and the toast.
+  // An edited group's standing charge counts towards its new price.
+  const walletCost = useComposerWalletCost({
+    group: existingData?.integration ? existingData.group : undefined,
+  });
+  const walletAvatarTip = useWalletAvatarTip();
+  // A paid plan keeps the composer footer it always had.
+  const paidPlan = useWalletAccess() === 'plan';
+  // What saving on the schedule charges now (negative gives back).
+  const walletDue = walletCost.estimate?.due ?? walletCost.estimate?.price ?? 0;
+  const walletFormat = useWalletFormat();
+  // A scheduled post is re-priced on update (the difference); a new post, a
+  // draft, or a failed or published post is charged in full when scheduled.
+  const walletMode: WalletCostMode =
+    existingData?.integration && existingData?.posts?.[0]?.state === 'QUEUE'
+      ? 'update'
+      : 'new';
+  const walletBlocked =
+    !dummy && !addEditSets && walletBlocksSchedule(walletCost);
+  const walletBlockedTip = walletBlocked
+    ? walletMode === 'update'
+      ? t(
+          'wallet_update_blocked_tip',
+          'Not enough credits to update this post. Top up, or save it as a draft.'
+        )
+      : t(
+          'wallet_schedule_blocked_tip',
+          'Not enough credits to schedule this post. Top up, or save it as a draft.'
+        )
+    : undefined;
+  const fireEvents = useFireEvents();
 
   const schedule = useCallback(
     (type: 'draft' | 'now' | 'schedule' | 'update') => async () => {
@@ -465,10 +513,35 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               body: JSON.stringify(data),
             });
 
+        if (!addEditSets) fireEvents(postEventName(type), postEventProps(type, posts, { is_new: !existingData.integration }));
         if (!addEditSets) {
           mutate();
+          refreshWallet();
           toaster.show(
-            !existingData.integration
+            // "Just update the post details" of a published post charges
+            // nothing; scheduling and posting now do.
+            type !== 'draft' &&
+              type !== 'update' &&
+              walletDue > 0 &&
+              walletMode === 'new'
+              ? t(
+                  'wallet_charged_toast',
+                  'Added to calendar. {{credits}} credits charged.',
+                  { credits: walletFormat.credits(walletDue) }
+                )
+              : type !== 'draft' && walletMode === 'update' && walletDue > 0
+              ? t(
+                  'wallet_update_charged_toast',
+                  'Updated. {{credits}} more credits charged.',
+                  { credits: walletFormat.credits(walletDue) }
+                )
+              : type !== 'draft' && walletMode === 'update' && walletDue < 0
+              ? t(
+                  'wallet_update_refunded_toast',
+                  'Updated. {{credits}} credits given back.',
+                  { credits: walletFormat.credits(-walletDue) }
+                )
+              : !existingData.integration
               ? t('added_successfully', 'Added successfully')
               : t('updated_successfully', 'Updated successfully')
           );
@@ -493,7 +566,142 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
       dummy,
       shortlinkPreferenceData,
       reviewed,
+      walletDue,
+      walletFormat,
+      walletMode,
+      refreshWallet,
     ]
+  );
+
+  // The footer's two halves. A paid plan gets them in the footer it always
+  // had; a wallet workspace's footer also carries the cost line.
+  const footerStart = (
+    <>
+      {!dummy && (
+        <TagsComponent
+          name="tags"
+          label={t('tags', 'Tags')}
+          initial={tags}
+          onChange={(e) => {
+            setTags(e.target.value);
+          }}
+        />
+      )}
+
+      {!dummy && <RepeatComponent repeat={repeater} onChange={setRepeater} />}
+
+      {!dummy && (
+        <ReviewedCheckbox
+          checked={reviewed}
+          onChange={setReviewed}
+          className={paidPlan ? undefined : 'h-[44px]'}
+        />
+      )}
+    </>
+  );
+  const footerEnd = (
+    <>
+      {existingData?.integration && (
+        <button
+          onClick={deletePost}
+          className={
+            paidPlan
+              ? 'cursor-pointer flex text-[#FF3F3F] gap-[8px] items-center text-[15px] font-[600]'
+              : 'cursor-pointer flex text-[#FF3F3F] gap-[8px] items-center h-[44px] text-[15px] font-[600]'
+          }
+        >
+          <div>
+            <TrashIcon />
+          </div>
+          <div>{t('delete_post', 'Delete Post')}</div>
+        </button>
+      )}
+      <DatePicker onChange={setDate} date={date} />
+      {!addEditSets && (
+        <button
+          disabled={selectedIntegrations.length === 0 || loading || locked}
+          onClick={schedule('draft')}
+          className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600]"
+        >
+          {loading && (
+            <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
+              <div className="animate-spin h-[20px] w-[20px] border-4 border-textColor border-t-transparent rounded-full" />
+            </div>
+          )}
+          <div className={clsx(loading && 'invisible')}>
+            {t('save_as_draft', 'Save as Draft')}
+          </div>
+        </button>
+      )}
+      {addEditSets && (
+        <button
+          className="text-white text-[15px] font-[600] min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#20808D] ps-[20px] pe-[16px]"
+          disabled={selectedIntegrations.length === 0 || loading || locked}
+          onClick={schedule('draft')}
+        >
+          Save Set
+        </button>
+      )}
+      {!addEditSets && (
+        <div
+          className="group cursor-pointer relative"
+          data-tooltip-id={walletBlockedTip ? 'tooltip' : undefined}
+          data-tooltip-content={walletBlockedTip}
+        >
+          <button
+            disabled={
+              selectedIntegrations.length === 0 ||
+              loading ||
+              locked ||
+              walletBlocked
+            }
+            onClick={schedule('schedule')}
+            className="text-white relative min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#20808D] ps-[20px] pe-[16px]"
+          >
+            {loading && (
+              <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
+                <div className="animate-spin h-[20px] w-[20px] border-4 border-white border-t-transparent rounded-full" />
+              </div>
+            )}
+            <div
+              className={clsx('text-[15px] font-[600]', loading && 'invisible')}
+            >
+              {selectedIntegrations.length === 0
+                ? t('check_circles_above', 'Check the circles above')
+                : dummy
+                ? t('create_output', 'Create output')
+                : !existingData?.integration
+                ? t('add_to_calendar', 'Add to calendar')
+                : existingData?.posts?.[0]?.state === 'DRAFT'
+                ? t('schedule', 'Schedule')
+                : t('update', 'Update')}
+            </div>
+            {!dummy && (
+              <div className="flex justify-center items-center h-[20px] w-[20px] pt-[4px] arrow-change">
+                <DropdownArrowSmallIcon className="group-hover:rotate-180 text-white" />
+              </div>
+            )}
+          </button>
+
+          {!dummy && (
+            <button
+              onClick={schedule('now')}
+              disabled={
+                selectedIntegrations.length === 0 ||
+                loading ||
+                locked ||
+                walletBlocked
+              }
+              className="rounded-[8px] z-[300] disabled:cursor-not-allowed disabled:opacity-80 hidden group-hover:flex absolute bottom-[100%] -left-[12px] p-[12px] w-[206px] bg-newBgColorInner"
+            >
+              <div className="text-white rounded-[8px] bg-[#1FB8CD] h-[44px] w-full flex justify-center items-center post-now">
+                {t('post_now', 'Post Now')}
+              </div>
+            </button>
+          )}
+        </div>
+      )}
+    </>
   );
 
   return (
@@ -517,8 +725,18 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   className="gap-[32px] flex flex-col pe-[8px] pt-[20px] ps-[20px] absolute top-0 left-0 w-full h-full overflow-x-hidden overflow-y-scroll scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner"
                 >
                   <div className="flex w-full">
-                    <div className="flex flex-1">
-                      <PicksSocialsComponent toolTip={true} />
+                    <div
+                      className={
+                        paidPlan
+                          ? 'flex flex-1'
+                          : 'flex flex-1 items-center gap-[8px]'
+                      }
+                    >
+                      <PicksSocialsComponent
+                        toolTip={true}
+                        toolTipFor={walletAvatarTip}
+                      />
+                      {!existingData.integration && <WalletLockHint />}
                     </div>
                     <div>
                       {!dummy && (
@@ -622,123 +840,32 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
             </div>
           </div>
         </div>
-        <div className="select-none h-[84px] py-[20px] border-t border-newBorder flex items-center">
-          <div className="flex-1 flex ps-[20px] gap-[8px]">
-            {!dummy && (
-              <TagsComponent
-                name="tags"
-                label={t('tags', 'Tags')}
-                initial={tags}
-                onChange={(e) => {
-                  setTags(e.target.value);
-                }}
+        {paidPlan ? (
+          <div className="select-none h-[84px] py-[20px] border-t border-newBorder flex items-center">
+            <div className="flex-1 flex ps-[20px] gap-[8px]">{footerStart}</div>
+            <div className="pe-[20px] flex items-center justify-end gap-[8px]">
+              {footerEnd}
+            </div>
+          </div>
+        ) : (
+          <div className="select-none border-t border-newBorder flex flex-col">
+            {!dummy && !addEditSets && (
+              <WalletCostLine
+                cost={walletCost}
+                mode={walletMode}
+                className="px-[20px] pt-[14px] -mb-[6px]"
               />
             )}
-
-            {!dummy && (
-              <RepeatComponent repeat={repeater} onChange={setRepeater} />
-            )}
-
-            {!dummy && (
-              <ReviewedCheckbox checked={reviewed} onChange={setReviewed} />
-            )}
-          </div>
-          <div className="pe-[20px] flex items-center justify-end gap-[8px]">
-            {existingData?.integration && (
-              <button
-                onClick={deletePost}
-                className="cursor-pointer flex text-[#FF3F3F] gap-[8px] items-center text-[15px] font-[600]"
-              >
-                <div>
-                  <TrashIcon />
-                </div>
-                <div>{t('delete_post', 'Delete Post')}</div>
-              </button>
-            )}
-            <DatePicker onChange={setDate} date={date} />
-            {!addEditSets && (
-              <button
-                disabled={
-                  selectedIntegrations.length === 0 || loading || locked
-                }
-                onClick={schedule('draft')}
-                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600]"
-              >
-                {loading && (
-                  <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
-                    <div className="animate-spin h-[20px] w-[20px] border-4 border-textColor border-t-transparent rounded-full" />
-                  </div>
-                )}
-                <div className={clsx(loading && 'invisible')}>
-                  {t('save_as_draft', 'Save as Draft')}
-                </div>
-              </button>
-            )}
-            {addEditSets && (
-              <button
-                className="text-white text-[15px] font-[600] min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#20808D] ps-[20px] pe-[16px]"
-                disabled={
-                  selectedIntegrations.length === 0 || loading || locked
-                }
-                onClick={schedule('draft')}
-              >
-                Save Set
-              </button>
-            )}
-            {!addEditSets && (
-              <div className="group cursor-pointer relative">
-                <button
-                  disabled={
-                    selectedIntegrations.length === 0 || loading || locked
-                  }
-                  onClick={schedule('schedule')}
-                  className="text-white relative min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#20808D] ps-[20px] pe-[16px]"
-                >
-                  {loading && (
-                    <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
-                      <div className="animate-spin h-[20px] w-[20px] border-4 border-white border-t-transparent rounded-full" />
-                    </div>
-                  )}
-                  <div
-                    className={clsx(
-                      'text-[15px] font-[600]',
-                      loading && 'invisible'
-                    )}
-                  >
-                    {selectedIntegrations.length === 0
-                      ? t('check_circles_above', 'Check the circles above')
-                      : dummy
-                      ? t('create_output', 'Create output')
-                      : !existingData?.integration
-                      ? t('add_to_calendar', 'Add to calendar')
-                      : existingData?.posts?.[0]?.state === 'DRAFT'
-                      ? t('schedule', 'Schedule')
-                      : t('update', 'Update')}
-                  </div>
-                  {!dummy && (
-                    <div className="flex justify-center items-center h-[20px] w-[20px] pt-[4px] arrow-change">
-                      <DropdownArrowSmallIcon className="group-hover:rotate-180 text-white" />
-                    </div>
-                  )}
-                </button>
-
-                {!dummy && (
-                  <button
-                    onClick={schedule('now')}
-                    disabled={
-                      selectedIntegrations.length === 0 || loading || locked
-                    }
-                    className="rounded-[8px] z-[300] disabled:cursor-not-allowed disabled:opacity-80 hidden group-hover:flex absolute bottom-[100%] -left-[12px] p-[12px] w-[206px] bg-newBgColorInner"
-                  >
-                    <div className="text-white rounded-[8px] bg-[#1FB8CD] h-[44px] w-full flex justify-center items-center post-now">
-                      {t('post_now', 'Post Now')}
-                    </div>
-                  </button>
-                )}
+            <div className="min-h-[84px] py-[20px] flex flex-wrap items-center gap-y-[12px] whitespace-nowrap">
+              <div className="flex-1 flex items-center ps-[20px] gap-[8px]">
+                {footerStart}
               </div>
-            )}
+              <div className="ps-[20px] pe-[20px] ms-auto flex items-center justify-end gap-[8px]">
+                {footerEnd}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
       </div>
       {!!user?.tier?.ai && (
         <CopilotPopup

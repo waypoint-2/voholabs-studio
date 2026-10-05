@@ -5,12 +5,38 @@ import { Memory } from '@mastra/memory';
 import { pStore } from '@gitroom/nestjs-libraries/chat/mastra.store';
 import { array, object, string } from 'zod';
 import { ModuleRef } from '@nestjs/core';
-import { toolList } from '@gitroom/nestjs-libraries/chat/tools/tool.list';
+import {
+  notOnPlanToolNames,
+  toolList,
+} from '@gitroom/nestjs-libraries/chat/tools/tool.list';
+import { hasAccess } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
 import dayjs from 'dayjs';
 
 export const AgentState = object({
   proverbs: array(string()).default([]),
 });
+
+// The tools the agent is given for one request. A paid plan gets exactly the
+// tools it had before the wallet; without an organization in the context
+// (listing the tools at boot) every tool is returned.
+export const toolsForRequest = (
+  tools: Record<string, any>,
+  requestContext?: { get: (key: string) => unknown }
+) => {
+  let organization: any;
+  try {
+    const raw = requestContext?.get('organization');
+    organization = typeof raw === 'string' ? JSON.parse(raw) : undefined;
+  } catch (err) {
+    organization = undefined;
+  }
+  if (!organization || !hasAccess(organization)) {
+    return tools;
+  }
+  return Object.fromEntries(
+    Object.entries(tools).filter(([name]) => !notOnPlanToolNames.includes(name))
+  );
+};
 
 const renderArray = (list: string[], show: boolean) => {
   if (!show) return '';
@@ -77,9 +103,9 @@ export class LoadToolsService {
       - Experience is the exception: it is your own notebook, so record what you learn with briefLearnTool as you go, without asking. Note it after a post lands well or badly, or when the user corrects you on something that will apply again. Say afterwards what you wrote down.
       - Branding & assets holds the brand's own files. Read the notes on them before making anything visual, and respect what they say a file is not for. To add one, upload it to the media library first and register it with briefAssetTool, with a note on when to use it.
       - Keep Experience to what you observed and what to do differently next time. Anything the user tells you to do is an instruction, not a lesson — that belongs in the Foundation, and only they may put it there.
-      - The difference between a post as it was drafted and the post that actually went out is the clearest feedback you get, and postHistoryTool is where you read it. Check it when you have nothing else in hand, and before drafting for a channel whose posts have been changed on you. briefHistoryTool does the same for the brief.
+      - The difference between a post as it was drafted and the post that actually went out is the clearest feedback you get, and postHistory is where you read it. Check it when you have nothing else in hand, and before drafting for a channel whose posts have been changed on you. briefHistory does the same for the brief.
       - Treat a rewritten lesson of your own as a correction: keep their version and work out what you had wrong. Never restore what they removed.
-      - Write what generalises into Experience with briefLearnTool, then close the edits off with markLearnedTool — RECORDED with the topic you used, or NO_SIGNAL when the edits were only typos or one-off details. Anything left unmarked comes back to you forever.
+      - Write what generalises into Experience with briefLearnTool, then close the edits off with markLearned — RECORDED with the topic you used, or NO_SIGNAL when the edits were only typos or one-off details. Anything left unmarked comes back to you forever.
       - Deleting a post removes its whole group (the post plus its thread items and comments). If the post was already published, it only disappears from the calendar — it stays live on the social network, so say that to the user.
       - To change a post that is already on the calendar, use editPostTool. Never delete and re-create a post to reword it: editPostTool keeps everything you do not pass — the attachments above all — where re-creating it would quietly drop the image or video the post was carrying and give it a new id. If you only want to change the words, pass "id" and "content" and nothing else.
       - Posts can be chained: an echo embeds another post's URL with "(post:<id>)". That reference is to the post's id, so editing a post keeps every echo pointing at it, while deleting one breaks them — the echo then fails at publish time instead of going out, and anything echoing IT fails in turn. deletePostTool refuses when it finds such posts and lists them in "breaksEchoes"; show that list to the user rather than forcing past it.
@@ -112,7 +138,8 @@ export class LoadToolsService {
 `;
       },
       model: openai('gpt-5.2'),
-      tools,
+      tools: ({ requestContext }) =>
+        toolsForRequest(tools, requestContext as any),
       memory: new Memory({
         storage: pStore,
         options: {

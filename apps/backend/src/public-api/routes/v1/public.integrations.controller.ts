@@ -62,6 +62,8 @@ import { RefreshToken } from '@gitroom/nestjs-libraries/integrations/social.abst
 import { PostValidationException } from '@gitroom/backend/api/routes/posts.validation.exception';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
+import { paidOnlyChannelMessage } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
 import {
   decodeCursor,
   parseLimit,
@@ -69,10 +71,6 @@ import {
   toRecentMediaErrorResponse,
 } from '@gitroom/nestjs-libraries/integrations/social/recent.media';
 
-import {
-  paidOnlyChannelMessage,
-  providerNeedsPaidPlan,
-} from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
 @ApiTags('Public API')
 @Controller('/public/v1')
 export class PublicIntegrationsController {
@@ -84,7 +82,8 @@ export class PublicIntegrationsController {
     private _mediaService: MediaService,
     private _notificationService: NotificationService,
     private _integrationManager: IntegrationManager,
-    private _refreshIntegrationService: RefreshIntegrationService
+    private _refreshIntegrationService: RefreshIntegrationService,
+    private _walletService: WalletService
   ) {}
 
   @Post('/upload')
@@ -445,11 +444,21 @@ export class PublicIntegrationsController {
       throw new HttpException({ msg: 'Integration not allowed' }, 400);
     }
 
-    if (
-      providerNeedsPaidPlan(integration) &&
-      !(await this._integrationService.organizationHasPaidPlan(org.id))
-    ) {
-      throw new HttpException({ msg: paidOnlyChannelMessage() }, 402);
+    if (!(await this._integrationService.canUseProvider(org.id, integration))) {
+      const locked = await this._walletService.providerLocked(
+        org.id,
+        integration,
+        paidOnlyChannelMessage()
+      );
+      const body = locked.getResponse();
+      // `msg` is what this API has always returned; the wallet fields ride
+      // along when a top-up opens the channel.
+      throw new HttpException(
+        typeof body === 'string'
+          ? { msg: body }
+          : { msg: locked.message, ...(body as object) },
+        402
+      );
     }
 
     const integrationProvider =

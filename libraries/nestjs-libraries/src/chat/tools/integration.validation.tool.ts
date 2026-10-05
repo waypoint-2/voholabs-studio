@@ -34,7 +34,10 @@ export class IntegrationValidationTool implements AgentToolInterface {
       inputSchema: z.object({
         isPremium: z
           .boolean()
-          .describe('is this the user premium? if not, set to false'),
+          .optional()
+          .describe(
+            'Only matters for X: whether the account is X Premium (longer posts). Defaults to false; leave it out for every other platform.'
+          ),
         platform: z
           .string()
           .describe(
@@ -72,7 +75,7 @@ export class IntegrationValidationTool implements AgentToolInterface {
                     })
                   )
                   .describe(
-                    'This will be passed to schedulePostTool [output:settings]'
+                    'This will be passed to integrationSchedulePostTool [output:settings]'
                   ),
               })
             )
@@ -93,7 +96,7 @@ export class IntegrationValidationTool implements AgentToolInterface {
           };
         }
 
-        const maxLength = integration.maxLength(inputData.isPremium);
+        const maxLength = integration.maxLength(inputData.isPremium ?? false);
         const schemas = !integration.dto
           ? false
           : getValidationSchemas()[integration.dto.name];

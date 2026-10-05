@@ -4,6 +4,10 @@ import { EventEmitter } from 'events';
 import React, { FC, useCallback, useEffect, useRef, useState } from 'react';
 import { TopTitle } from '@gitroom/frontend/components/launches/helpers/top.title.component';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+import {
+  openTopUpIfWalletRefused,
+  WALLET_INLINE_REQUEST,
+} from '@gitroom/frontend/components/wallet/wallet.bridge';
 import { hasExtension } from '@gitroom/helpers/utils/has.extension';
 import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
@@ -337,12 +341,16 @@ export const MediaComponentInner: FC<{
       const formData = new FormData();
       formData.append('file', blob, 'media.jpg');
       formData.append('preventSave', 'true');
-      const data = await (
-        await newFetch('/media/upload-simple', {
-          method: 'POST',
-          body: formData,
-        })
-      ).json();
+      const response = await newFetch('/media/upload-simple', {
+        ...WALLET_INLINE_REQUEST,
+        method: 'POST',
+        body: formData,
+      });
+      if (await openTopUpIfWalletRefused(response)) {
+        setLoading(false);
+        return;
+      }
+      const data = await response.json();
       path = data.path;
     }
 

@@ -19,7 +19,7 @@ export class BriefHistoryTool implements AgentToolInterface {
       description: `See what has changed in the agent brief since it was last marked as reviewed. Who made a change is not recorded, so this includes notes you wrote yourself — read a document before drawing a lesson from it, or you will be learning from your own writing.
 What matters is a rule that came back different from how you left it: that is somebody telling you the rule was wrong, and their version is the one to keep. Never restore what they removed.
 Returns one entry per document, with the rules added, removed or rewritten. Removed words are marked [-like this-] and added words {+like this+}.
-Work out what the change implies beyond the document it happened in, write that down with briefLearnTool, then call markLearnedTool with kind "brief" and the ids returned here, so the same edit is not reviewed again.`,
+Work out what the change implies beyond the document it happened in, write that down with briefLearnTool, then call markLearned with kind "brief" and the ids returned here, so the same edit is not reviewed again.`,
       mcp: {
         annotations: {
           title: 'Review Brief Edits',
@@ -52,6 +52,11 @@ Work out what the change implies beyond the document it happened in, write that 
               key: z.string(),
               editedAt: z.string(),
               learned: z.boolean(),
+              change: z
+                .enum(['created', 'edited', 'deleted'])
+                .describe(
+                  'created: written for the first time. deleted: the document was removed (a deleted source keeps only its name). edited: anything else.'
+                ),
               rulesAdded: z.array(z.string()),
               rulesRemoved: z.array(z.string()),
               rulesEdited: z.array(
@@ -65,7 +70,7 @@ Work out what the change implies beyond the document it happened in, write that 
       }),
       execute: async (inputData, context) => {
         checkAuth(inputData, context);
-        const blocked = paidOnly(context, 'The agent brief');
+        const blocked = paidOnly(context, 'The agent brief', 'brief');
         if (blocked) {
           return { error: blocked };
         }
@@ -89,6 +94,7 @@ Work out what the change implies beyond the document it happened in, write that 
             key: entry.key,
             editedAt: entry.editedAt.toISOString(),
             learned: entry.learned,
+            change: entry.change,
             rulesAdded: entry.diff.blocksAdded,
             rulesRemoved: entry.diff.blocksRemoved,
             rulesEdited: entry.diff.blocksEdited,

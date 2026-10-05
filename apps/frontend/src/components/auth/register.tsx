@@ -211,10 +211,18 @@ export function RegisterAfter({
     <FormProvider {...form}>
       <form method="post" className="flex-1 flex" onSubmit={form.handleSubmit(onSubmit)}>
         <div className="flex flex-col flex-1">
-          <div>
+          <div className="flex items-end justify-between gap-[12px] flex-wrap">
             <h1 className="text-[40px] font-[500] -tracking-[0.8px] text-start cursor-pointer">
               {t('sign_up', 'Sign Up')}
             </h1>
+            {/* Returning users find the way in without scrolling past the form. */}
+            <p className="text-[14px] pb-[8px]">
+              {t('already_have_an_account', 'Already Have An Account?')}
+              &nbsp;
+              <Link href="/auth/login" className="underline cursor-pointer">
+                {t('sign_in', 'Sign In')}
+              </Link>
+            </p>
           </div>
           <div className="text-[14px] mt-[32px] mb-[12px]">
             {t('continue_with', 'Continue With')}

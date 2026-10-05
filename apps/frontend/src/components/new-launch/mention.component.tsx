@@ -148,8 +148,11 @@ export const suggestion = (
     query: string
   ) => Promise<{ image: string; label: string; id: string }[]>
 ) => {
-  // Create debounced version of loadList once
+  // Create debounced version of loadList once. Lookups can be paid (X charges
+  // wallet workspaces per username looked up), so the wait stays at 400 ms or
+  // more and a query already answered in this editor is not asked again.
   const debouncedLoadList = debounce(loadList, 500);
+  const answered = new Map<string, { image: string; label: string; id: string }[]>();
   let component: any;
 
   return {
@@ -161,8 +164,15 @@ export const suggestion = (
       }
 
       try {
+        const known = answered.get(query);
+        if (known) {
+          return known;
+        }
         component.updateProps({ loading: true, stop: false });
         const result = await debouncedLoadList(query);
+        if (Array.isArray(result) && result.length) {
+          answered.set(query, result);
+        }
         return result;
       } catch (error) {
         return [];

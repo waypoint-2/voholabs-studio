@@ -29,11 +29,11 @@ export const useBriefChannels = () => {
     revalidateOnFocus: false,
     revalidateOnReconnect: false,
     revalidateIfStale: false,
-    // Required alongside fallbackData: SWR treats the fallback as cached data
-    // and, with revalidateIfStale off, would never fetch at all.
+    // Fetch on every mount. No fallbackData: with fallback data SWR defers the
+    // first fetch to requestAnimationFrame, which never runs in a background
+    // tab, so isLoading stayed true and the document pane spun forever.
     revalidateOnMount: true,
     refreshWhenHidden: false,
     refreshWhenOffline: false,
-    fallbackData: [],
   });
 };

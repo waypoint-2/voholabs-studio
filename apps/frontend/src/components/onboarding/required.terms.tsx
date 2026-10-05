@@ -1,5 +1,6 @@
 'use client';
 
+import { useFireEvents, useTrackView } from '@gitroom/helpers/utils/use.fire.events';
 import React, { FC, useCallback, useState } from 'react';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
@@ -20,6 +21,8 @@ export const RequiredTerms: FC<{
   const fetch = useFetch();
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const fireEvents = useFireEvents();
+  useTrackView('onboarding_step', { step: 'terms' });
 
   const logout = useCallback(async () => {
     await fetch('/user/logout', { method: 'POST' });
@@ -33,6 +36,7 @@ export const RequiredTerms: FC<{
     setLoading(false);
 
     if (response.ok) {
+      fireEvents('onboarding_step', { step: 'terms_accepted' }, { send_instantly: true });
       onDone();
       return;
     }

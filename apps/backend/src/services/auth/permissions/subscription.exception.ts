@@ -33,6 +33,23 @@ export class SubscriptionExceptionFilter implements ExceptionFilter {
       error.section === Sections.ONBOARDING ||
       error.section === Sections.TERMS;
 
+    // Opens with a wallet top-up, so the app offers the top-up instead of
+    // Postiz billing.
+    const isWallet =
+      error.section === Sections.BRIEF || error.section === Sections.SKILLS;
+
+    // A wallet refusal has the same body as every other one in the app:
+    // { message, wallet: true, url: '/wallet' }.
+    if (isWallet) {
+      response.status(status).json({
+        statusCode: status,
+        message,
+        wallet: true,
+        url: '/wallet',
+      });
+      return;
+    }
+
     response.status(status).json({
       statusCode: status,
       message,
@@ -57,6 +74,10 @@ const getErrorMessage = (error: {
       return 'Please agree to the current Terms of Service to carry on.';
     case Sections.AI:
       return paidFeatureMessage('AI');
+    case Sections.BRIEF:
+      return 'The agent brief opens after your first wallet top-up.';
+    case Sections.SKILLS:
+      return 'The skills library opens after your first wallet top-up.';
     case Sections.POSTS_PER_MONTH:
       switch (error.action) {
         default:

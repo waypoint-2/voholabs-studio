@@ -1,6 +1,7 @@
 'use client';
 
-import { createContext, FC, ReactNode, useContext } from 'react';
+import { createContext, FC, ReactNode, useContext, useEffect } from 'react';
+import { usePostHog } from 'posthog-js/react';
 import { User } from '@prisma/client';
 import {
   pricing,
@@ -41,6 +42,51 @@ export const ContextWrapper: FC<{
         tier: pricing[user.tier],
       }
     : ({} as any);
-  return <UserContext.Provider value={values}>{children}</UserContext.Provider>;
+  return (
+    <UserContext.Provider value={values}>
+      <AnalyticsIdentify user={user} />
+      {children}
+    </UserContext.Provider>
+  );
+};
+
+// FREE, PAY_AS_YOU_GO (free plan with a wallet top-up), TRIAL or PAID.
+export const planTier = (user: {
+  tier?: string;
+  payAsYouGo?: boolean;
+  trialEndsAt?: string | null;
+}) =>
+  !user.tier || user.tier === 'FREE'
+    ? user.payAsYouGo
+      ? 'PAY_AS_YOU_GO'
+      : 'FREE'
+    : user.trialEndsAt
+    ? 'TRIAL'
+    : 'PAID';
+
+// Tells PostHog who is using the app, by ids only: no email and no name.
+// Every later event carries the organization and its plan, so usage can be
+// split by plan. Does nothing when PostHog is not set up.
+const AnalyticsIdentify: FC<{ user: any }> = ({ user }) => {
+  const posthog = usePostHog();
+  const plan = user ? planTier(user) : undefined;
+  useEffect(() => {
+    if (!user?.id || user.impersonate || !(posthog as any)?.__loaded) {
+      return;
+    }
+    try {
+      const props = {
+        org_id: user.orgId,
+        plan_tier: plan,
+        plan_name: user.tier,
+        role: user.role,
+      };
+      posthog.identify(user.id, props);
+      posthog.register(props);
+    } catch {
+      // Analytics must never break the app.
+    }
+  }, [posthog, user?.id, user?.orgId, plan, user?.tier, user?.role]);
+  return null;
 };
 export const useUser = () => useContext(UserContext);

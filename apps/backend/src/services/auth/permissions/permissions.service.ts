@@ -6,6 +6,7 @@ import { PostsService } from '@gitroom/nestjs-libraries/database/prisma/posts/po
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import dayjs from 'dayjs';
 import { WebhooksService } from '@gitroom/nestjs-libraries/database/prisma/webhooks/webhooks.service';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
 import { AuthorizationActions, Sections } from './permission.exception.class';
 import {
   hasAccess,
@@ -20,7 +21,8 @@ export class PermissionsService {
     private _subscriptionService: SubscriptionService,
     private _postsService: PostsService,
     private _integrationService: IntegrationService,
-    private _webhooksService: WebhooksService
+    private _webhooksService: WebhooksService,
+    private _walletService: WalletService
   ) {}
   async getPackageOptions(orgId: string) {
     const loadSubscription =
@@ -169,6 +171,22 @@ export class PermissionsService {
       }
 
       if (section === Sections.AI && options.ai) {
+        can(action, section);
+        continue;
+      }
+
+      if (
+        section === Sections.BRIEF &&
+        (options.ai || (await this._walletService.unlocks(orgId, 'brief')))
+      ) {
+        can(action, section);
+        continue;
+      }
+
+      if (
+        section === Sections.SKILLS &&
+        (options.ai || (await this._walletService.unlocks(orgId, 'skills')))
+      ) {
         can(action, section);
         continue;
       }

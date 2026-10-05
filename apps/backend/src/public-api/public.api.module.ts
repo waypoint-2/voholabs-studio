@@ -13,6 +13,7 @@ import { PublicAuthMiddleware } from '@gitroom/backend/services/auth/public.auth
 import { PublicUploadTicketController } from '@gitroom/backend/public-api/routes/v1/public.upload.ticket.controller';
 import { PublicBriefController } from '@gitroom/backend/public-api/routes/v1/public.brief.controller';
 import { PublicUploadMintController } from '@gitroom/backend/public-api/routes/v1/public.upload.mint.controller';
+import { PublicBriefUploadController } from '@gitroom/backend/public-api/routes/v1/public.brief.upload.controller';
 
 const authenticatedController = [
   PublicIntegrationsController,
@@ -23,7 +24,10 @@ const authenticatedController = [
 ];
 // Authenticated by the single-use ticket in its own URL, so it must stay out of
 // the list above — PublicAuthMiddleware would reject it for having no API key.
-const ticketController = [PublicUploadTicketController];
+const ticketController = [
+  PublicUploadTicketController,
+  PublicBriefUploadController,
+];
 @Module({
   imports: [UploadModule],
   controllers: [...authenticatedController, ...ticketController],

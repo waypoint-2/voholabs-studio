@@ -154,7 +154,11 @@ export class MediaController {
     @Body('preventSave') preventSave: string = 'false'
   ) {
     const originalName = file.originalname;
-    await this._mediaService.assertStorage(org.id, file.size);
+    // A file kept out of the library (preventSave) does not count towards
+    // its storage, so it is checked but never charged for.
+    await this._mediaService.assertStorage(org.id, file.size, {
+      charge: preventSave !== 'true',
+    });
     const getFile = await this.storage.uploadFile(file);
 
     if (preventSave === 'true') {
@@ -179,11 +183,13 @@ export class MediaController {
     @Param('endpoint') endpoint: string
   ) {
     // The size the browser announces only turns an oversized upload away
-    // early. What counts is the real size, checked once the file is whole.
+    // early, and is never charged for. What counts is the real size, checked
+    // (and for a wallet, paid) once the file is whole.
     if (endpoint === 'create-multipart-upload') {
       await this._mediaService.assertStorage(
         org.id,
-        Number(req.body?.file?.size) || 0
+        Number(req.body?.file?.size) || 0,
+        { charge: false }
       );
     }
 

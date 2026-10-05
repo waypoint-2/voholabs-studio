@@ -7,8 +7,15 @@ import { OAuthService } from '@gitroom/nestjs-libraries/database/prisma/oauth/oa
 import { runWithContext } from './async.storage';
 import { createOAuthMiddleware } from './oauth-middleware';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
-import { paidToolNames } from '@gitroom/nestjs-libraries/chat/tools/tool.list';
+import {
+  notOnPlanToolNames,
+  paidToolNames,
+  walletToolKeys,
+  walletToolNames,
+} from '@gitroom/nestjs-libraries/chat/tools/tool.list';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
 import { hasAccess } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
+import { trackMcpUse } from '@gitroom/nestjs-libraries/track/product.analytics';
 const fixAcceptHeader = (req: Request) => {
   const value = 'application/json, text/event-stream';
   req.headers.accept = value;
@@ -25,13 +32,27 @@ export const startMcp = async (app: INestApplication) => {
   const organizationService = app.get(OrganizationService, { strict: false });
   const oauthService = app.get(OAuthService, { strict: false });
 
+  const walletService = app.get(WalletService, { strict: false });
+
+  // Lists what this workspace's wallet top-up has opened (see paidOnly and
+  // walletToolNames). Any of it also earns the paid rate limit.
+  // A paid plan never uses the wallet, so its requests skip the wallet tables.
+  const withWallet = async <T extends { id: string } | null>(org: T) => {
+    if (org && !hasAccess(org as any)) {
+      (org as any).walletUnlocks = await walletService
+        .unlockedKeys(org.id)
+        .catch((): string[] => []);
+    }
+    return org;
+  };
+
   const resolveAuth = async (token: string) => {
     if (token.startsWith('pos_')) {
       const authorization = await oauthService.getOrgByOAuthToken(token);
       if (!authorization) return null;
-      return authorization.organization;
+      return withWallet(authorization.organization);
     }
-    return organizationService.getOrgByApiKey(token);
+    return withWallet(await organizationService.getOrgByApiKey(token));
   };
 
   // The free plan keeps the MCP, and the paid tools refuse on their own (see
@@ -44,7 +65,8 @@ export const startMcp = async (app: INestApplication) => {
   const paidLimit = Number(process.env.MCP_LIMIT_PER_MINUTE || 1200);
   const freeLimit = Number(process.env.MCP_FREE_LIMIT_PER_MINUTE || 120);
   const rateLimited = async (org: any, res: Response) => {
-    const mcpLimit = hasAccess(org) ? paidLimit : freeLimit;
+    const mcpLimit =
+      hasAccess(org) || org?.walletUnlocks?.length ? paidLimit : freeLimit;
     try {
       const key = `mcp_limit:${org.id}:${Math.floor(Date.now() / 60000)}`;
       const total = await ioRedis.incr(key);
@@ -70,10 +92,16 @@ export const startMcp = async (app: INestApplication) => {
   const agent = mastra.getAgent('postiz');
   const tools = await agent.listTools();
 
+  // What a paid plan is served: every tool except the wallet's and the
+  // skills library.
   const serverConfig = {
     name: 'Voholabs MCP',
     version: '1.0.0',
-    tools,
+    tools: Object.fromEntries(
+      Object.entries(tools).filter(
+        ([name]) => !notOnPlanToolNames.includes(name)
+      )
+    ),
     // Registering the agent here is what publishes `ask_postiz`: MCPServer
     // generates an `ask_<name>` tool for every agent in this map. That tool
     // hands the whole job to Studio's own agent, which needs its own OpenAI key
@@ -94,7 +122,36 @@ export const startMcp = async (app: INestApplication) => {
     ),
   };
   const freeServer = new MCPServer(freeServerConfig);
-  const serverFor = (org: any) => (hasAccess(org) ? server : freeServer);
+
+  // A pay-as-you-go workspace: the free tools plus the ones a wallet top-up
+  // opens.
+  const walletServerConfig = {
+    ...serverConfig,
+    tools: Object.fromEntries(
+      Object.entries(tools).filter(
+        ([name]) =>
+          !paidToolNames.includes(name) || walletToolNames.includes(name)
+      )
+    ),
+  };
+  const walletServer = new MCPServer(walletServerConfig);
+
+  // The wallet server once the top-up opens any of its features (the brief or
+  // the skills); each of its tools still checks its own key (paidOnly).
+  const opensWalletTools = (org: any) =>
+    walletToolKeys.some((key) => org?.walletUnlocks?.includes(key));
+  const configFor = (org: any) =>
+    hasAccess(org)
+      ? serverConfig
+      : opensWalletTools(org)
+      ? walletServerConfig
+      : freeServerConfig;
+  const serverFor = (org: any) =>
+    hasAccess(org)
+      ? server
+      : opensWalletTools(org)
+      ? walletServer
+      : freeServer;
 
   const oauthMiddleware = createOAuthMiddleware({
     oauth: {
@@ -167,6 +224,7 @@ export const startMcp = async (app: INestApplication) => {
     if (await rateLimited(auth, res)) {
       return;
     }
+    trackMcpUse(auth.id);
 
     fixAcceptHeader(req);
     await runWithContext({ requestId: token!, auth }, async () => {
@@ -225,6 +283,8 @@ export const startMcp = async (app: INestApplication) => {
     if (await rateLimited(req.auth, res)) {
       return;
     }
+    // @ts-ignore
+    trackMcpUse(req.auth.id);
 
     const url = new URL('/mcp', process.env.NEXT_PUBLIC_BACKEND_URL);
 
@@ -264,7 +324,9 @@ export const startMcp = async (app: INestApplication) => {
     }
 
     // @ts-ignore
-    req.auth = await organizationService.getOrgByApiKey(req.params.id);
+    req.auth = await withWallet(
+      await organizationService.getOrgByApiKey(req.params.id as string)
+    );
     // @ts-ignore
     if (!req.auth) {
       res.status(400).send('Invalid API Key');
@@ -275,6 +337,8 @@ export const startMcp = async (app: INestApplication) => {
     if (await rateLimited(req.auth, res)) {
       return;
     }
+    // @ts-ignore
+    trackMcpUse(req.auth.id);
 
     const url = new URL(
       `/mcp/${req.params.id}`,
@@ -317,7 +381,9 @@ export const startMcp = async (app: INestApplication) => {
     }
 
     // @ts-ignore
-    req.auth = await organizationService.getOrgByApiKey(req.params.id);
+    req.auth = await withWallet(
+      await organizationService.getOrgByApiKey(req.params.id as string)
+    );
     // @ts-ignore
     if (!req.auth) {
       res.status(400).send('Invalid API Key');
@@ -328,6 +394,8 @@ export const startMcp = async (app: INestApplication) => {
     if (await rateLimited(req.auth, res)) {
       return;
     }
+    // @ts-ignore
+    trackMcpUse(req.auth.id);
 
     const url = new URL(req.originalUrl, process.env.NEXT_PUBLIC_BACKEND_URL);
 
@@ -337,7 +405,7 @@ export const startMcp = async (app: INestApplication) => {
       async () => {
         await new MCPServer(
           // @ts-ignore
-          hasAccess(req.auth) ? serverConfig : freeServerConfig
+          configFor(req.auth)
         ).startSSE({
           url,
           ssePath: `/sse/${req.params.id}`,

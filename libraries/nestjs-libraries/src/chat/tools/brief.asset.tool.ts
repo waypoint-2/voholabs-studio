@@ -29,26 +29,50 @@ Always write a note saying when to reach for this file and when not to — a log
         },
       },
       inputSchema: z.object({
-        name: z.string().describe('What this file is called'),
+        action: z
+          .enum(['add', 'remove'])
+          .optional()
+          .describe(
+            'add (the default) registers a file; remove takes the files in "assetIds" off'
+          ),
+        name: z
+          .string()
+          .optional()
+          .describe('What this file is called. Required to add.'),
         url: z
           .string()
-          .describe('The media library path, or a URL the file already lives at'),
+          .optional()
+          .describe(
+            'The media library path, or a URL the file already lives at. Required to add.'
+          ),
         mime: z
           .string()
           .optional()
           .describe('Content type, e.g. image/png or video/mp4'),
         note: z
           .string()
-          .describe('When to use this file, and when not to'),
+          .optional()
+          .describe('When to use this file, and when not to. Required to add.'),
+        assetIds: z
+          .array(z.string())
+          .optional()
+          .describe(
+            'For remove: the ids of the files to take off, from briefListTool'
+          ),
       }),
       outputSchema: z.object({
         registered: z.boolean().optional(),
+        removed: z.array(z.string()).optional(),
+        notFound: z
+          .array(z.string())
+          .optional()
+          .describe('Ids asked to remove that are not on the document'),
         assets: z.number().optional(),
         error: z.string().optional(),
       }),
       execute: async (inputData, context) => {
         checkAuth(inputData, context);
-        const blocked = paidOnly(context, 'The agent brief');
+        const blocked = paidOnly(context, 'The agent brief', 'brief');
         if (blocked) {
           return { error: blocked };
         }
@@ -56,6 +80,31 @@ Always write a note saying when to reach for this file and when not to — a log
           const organizationId = JSON.parse(
             (context?.requestContext as any)?.get('organization') as string
           ).id;
+
+          if (inputData.action === 'remove') {
+            if (!inputData.assetIds?.length) {
+              return {
+                error:
+                  'Pass "assetIds" with the ids of the files to remove (from briefListTool).',
+              };
+            }
+            const result = await this._briefService.removeAssets(
+              organizationId,
+              inputData.assetIds
+            );
+            return {
+              removed: result.removed,
+              ...(result.notFound.length ? { notFound: result.notFound } : {}),
+              assets: result.assets,
+            };
+          }
+
+          if (!inputData.name || !inputData.url || !inputData.note) {
+            return {
+              error:
+                'To add a file pass "name", "url" and "note" (when to use it, and when not to).',
+            };
+          }
 
           const saved = await this._briefService.registerAsset(organizationId, {
             name: inputData.name,
@@ -67,7 +116,7 @@ Always write a note saying when to reach for this file and when not to — a log
           return { registered: true, assets: saved.assets };
         } catch (err) {
           return {
-            error: `Failed to register the file: ${
+            error: `Failed to update the brand files: ${
               err instanceof Error ? err.message : 'Unexpected error'
             }`,
           };

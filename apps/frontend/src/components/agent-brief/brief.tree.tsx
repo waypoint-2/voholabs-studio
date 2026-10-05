@@ -6,6 +6,7 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import ImageWithFallback from '@gitroom/react/helpers/image.with.fallback';
 import SafeImage from '@gitroom/react/helpers/safe.image';
 import { BriefIcon } from '@gitroom/frontend/components/agent-brief/brief.icons';
+import { useBriefClassic } from '@gitroom/frontend/components/agent-brief/brief.classic';
 import {
   BriefTreeDocument,
   BriefTreeGroup,
@@ -33,14 +34,21 @@ const Chevron: FC<{ open: boolean }> = ({ open }) => (
 // The names here are one word each, and one word cannot say what belongs in a
 // section. The explanation hangs off a hover rather than sitting on the page,
 // because it is read once and then in the way forever.
-const Hint: FC<{ content: string }> = ({ content }) => (
+const Hint: FC<{ content: string; classic?: boolean }> = ({
+  content,
+  classic,
+}) => (
   <span
     data-tooltip-id="tooltip"
     data-tooltip-content={content}
     // Without a width the tooltip lays a paragraph out as a single line that
     // runs off the screen.
     data-tooltip-class-name="!max-w-[280px] !whitespace-normal !leading-[1.5]"
-    className="shrink-0 cursor-help text-textItemBlur hover:text-warm transition-colors"
+    className={
+      classic
+        ? 'shrink-0 cursor-help text-textItemBlur hover:text-warm transition-colors'
+        : 'shrink-0 cursor-help text-textItemBlur hover:text-tealText transition-colors'
+    }
   >
     <svg
       xmlns="http://www.w3.org/2000/svg"
@@ -64,19 +72,27 @@ const TreeRow: FC<{
   document: BriefTreeDocument;
   active: boolean;
   onSelect: (document: BriefTreeDocument) => void;
-}> = ({ document, active, onSelect }) => (
+  classic?: boolean;
+}> = ({ document, active, onSelect, classic }) => (
   <div
     onClick={() => onSelect(document)}
     className={clsx(
       'relative cursor-pointer select-none flex items-center gap-[10px] h-[36px] ps-[14px] pe-[10px] rounded-e-[8px] transition-colors',
-      active ? 'bg-warmSoft' : 'hover:bg-warmHover'
+      classic
+        ? active
+          ? 'bg-warmSoft'
+          : 'hover:bg-warmHover'
+        : active
+        ? 'bg-tealSoft'
+        : 'hover:bg-tealHover'
     )}
   >
     {/* Sized to the row rather than to a fixed-height graphic, so it can never
         run past the row it belongs to. */}
     <span
       className={clsx(
-        'absolute start-0 top-0 h-full w-[3px] rounded-e-[3px] bg-warm transition-opacity',
+        'absolute start-0 top-0 h-full w-[3px] rounded-e-[3px] transition-opacity',
+        classic ? 'bg-warm' : 'bg-tealText',
         active ? 'opacity-100' : 'opacity-0'
       )}
     />
@@ -86,7 +102,7 @@ const TreeRow: FC<{
     <span
       className={clsx(
         'relative shrink-0 w-[20px] h-[20px] flex items-center justify-center',
-        active ? 'text-warm' : 'text-textItemBlur'
+        active ? (classic ? 'text-warm' : 'text-tealText') : 'text-textItemBlur'
       )}
     >
       {document.channel ? (
@@ -123,7 +139,7 @@ const TreeRow: FC<{
         document.channel?.disabled && 'opacity-50'
       )}
     >
-      {document.label}
+      <bdi>{document.label}</bdi>
     </span>
   </div>
 );
@@ -135,6 +151,7 @@ export const BriefTree: FC<{
   onCreate: (group: BriefTreeGroup) => void;
 }> = ({ groups, active, onSelect, onCreate }) => {
   const t = useT();
+  const classic = useBriefClassic();
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const searchRef = useRef<HTMLInputElement>(null);
@@ -177,22 +194,34 @@ export const BriefTree: FC<{
 
   return (
     <>
-      <div className="flex items-center gap-[10px] mb-[16px]">
-        <span className="text-warm">
-          <BriefIcon name="compass" size={22} />
-        </span>
-        <h2 className="text-[20px] font-[500]">
-          {t('brief_title', 'Agent Brief')}
-        </h2>
-        <Hint
-          content={t(
-            'brief_title_tooltip',
-            'Imagine you are briefing your chief marketing officer. You can brief the agent manually, via MCP using another agent, or by talking directly to the agent.'
-          )}
-        />
-      </div>
+      {/* A paid plan keeps its "Agent Brief" header and hint. Otherwise the
+          page title above says "Brief" and carries the explanation in its
+          (i), so the tree starts with the search. */}
+      {classic && (
+        <div className="flex items-center gap-[10px] mb-[16px]">
+          <span className="text-warm">
+            <BriefIcon name="compass" size={22} />
+          </span>
+          <h2 className="text-[20px] font-[500]">
+            {t('brief_title', 'Agent Brief')}
+          </h2>
+          <Hint
+            classic={true}
+            content={t(
+              'brief_title_tooltip',
+              'Imagine you are briefing your chief marketing officer. You can brief the agent manually, via MCP using another agent, or by talking directly to the agent.'
+            )}
+          />
+        </div>
+      )}
 
-      <div className="flex items-center gap-[8px] h-[38px] px-[12px] mb-[16px] rounded-[8px] border border-newTableBorder focus-within:border-warm transition-colors">
+      <div
+        className={
+          classic
+            ? 'flex items-center gap-[8px] h-[38px] px-[12px] mb-[16px] rounded-[8px] border border-newTableBorder focus-within:border-warm transition-colors'
+            : 'flex items-center gap-[8px] h-[38px] px-[12px] mb-[16px] rounded-[8px] border border-newTableBorder focus-within:border-tealText transition-colors'
+        }
+      >
         <svg
           xmlns="http://www.w3.org/2000/svg"
           width="14"
@@ -213,6 +242,7 @@ export const BriefTree: FC<{
           ref={searchRef}
           value={search}
           onChange={(event) => setSearch(event.target.value)}
+          dir="auto"
           placeholder={t('brief_search_placeholder', 'Search files...')}
           className="flex-1 bg-transparent outline-none text-[14px] placeholder:text-textItemBlur"
         />
@@ -231,6 +261,7 @@ export const BriefTree: FC<{
               </div>
               {!!group.category.tooltipKey && (
                 <Hint
+                  classic={classic}
                   content={t(
                     group.category.tooltipKey,
                     group.category.tooltip!
@@ -242,7 +273,11 @@ export const BriefTree: FC<{
                   onClick={() => onCreate(group)}
                   data-tooltip-id="tooltip"
                   data-tooltip-content={t('brief_add_document', 'Add document')}
-                  className="cursor-pointer select-none w-[20px] h-[20px] rounded-[6px] flex items-center justify-center text-textItemBlur hover:text-warm hover:bg-warmHover transition-colors"
+                  className={
+                    classic
+                      ? 'cursor-pointer select-none w-[20px] h-[20px] rounded-[6px] flex items-center justify-center text-textItemBlur hover:text-warm hover:bg-warmHover transition-colors'
+                      : 'cursor-pointer select-none w-[20px] h-[20px] rounded-[6px] flex items-center justify-center text-textItemBlur hover:text-tealText hover:bg-tealHover transition-colors'
+                  }
                 >
                   <svg
                     xmlns="http://www.w3.org/2000/svg"
@@ -266,6 +301,7 @@ export const BriefTree: FC<{
               <div className="flex flex-col">
                 {group.documents.map((document) => (
                   <TreeRow
+                    classic={classic}
                     key={`${group.category.id}-${document.key}`}
                     document={document}
                     active={

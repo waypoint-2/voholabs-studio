@@ -72,6 +72,15 @@ export class PostsRepository {
     });
   }
 
+  // The plan and whether a wallet exists, in one read: decides whether the
+  // wallet has anything to do with this organization's posts.
+  organizationBillingState(orgId: string) {
+    return this._organization.model.organization.findUnique({
+      where: { id: orgId },
+      select: { subscription: true, wallet: { select: { id: true } } },
+    });
+  }
+
   searchForMissingThreeHoursPosts() {
     return this._post.model.post.findMany({
       where: {
@@ -228,6 +237,7 @@ export class PostsRepository {
       includeMedia?: boolean;
       includeSettings?: boolean;
       includeThread?: boolean;
+      includeError?: boolean;
     }
   ) {
     // A thread is a chain of child posts, one per link. Walking it row by row
@@ -304,6 +314,8 @@ export class PostsRepository {
         group: true,
         creationMethod: true,
         reviewed: true,
+        // Only for the callers that need why a post failed.
+        ...(options?.includeError ? { error: true } : {}),
         // Off by default: the calendar renders thousands of these and these
         // two are the heaviest fields on the row. Only the callers that need
         // to know what is attached, or how the post is configured, ask.
@@ -356,7 +368,11 @@ export class PostsRepository {
     }, [] as any[]);
   }
 
-  async getPostsList(orgId: string, query: GetPostsListDto) {
+  async getPostsList(
+    orgId: string,
+    query: GetPostsListDto,
+    includeError = false
+  ) {
     const tally = (
       rows: { integrationId: string; _count: { _all: number } }[]
     ) =>
@@ -465,6 +481,8 @@ export class PostsRepository {
           group: true,
           creationMethod: true,
           reviewed: true,
+          // Only for the callers that need why a post failed.
+          ...(includeError ? { error: true } : {}),
           tags: {
             select: {
               tag: true,

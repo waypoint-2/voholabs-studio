@@ -9,6 +9,10 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+import {
+  openTopUpIfWalletRefused,
+  WALLET_INLINE_REQUEST,
+} from '@gitroom/frontend/components/wallet/wallet.bridge';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { useHermesSettings } from '@gitroom/frontend/components/hermes/use.hermes.settings';
 import {
@@ -294,9 +298,16 @@ export const HermesChat = () => {
           form.append('file', file);
 
           const response = await fetch('/media/upload-simple', {
+            ...WALLET_INLINE_REQUEST,
             method: 'POST',
             body: form,
           });
+
+          const refused = await openTopUpIfWalletRefused(response);
+          if (refused !== undefined) {
+            setAttachError(refused || `${file.name} could not be uploaded.`);
+            continue;
+          }
 
           if (!response.ok) {
             setAttachError(

@@ -41,6 +41,7 @@ import {
   isActiveSubscription,
   trialEndsAt,
 } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
 
 @ApiTags('User')
 @Controller('/user')
@@ -51,7 +52,8 @@ export class UsersController {
     private _authService: AuthService,
     private _orgService: OrganizationService,
     private _userService: UsersService,
-    private _trackService: TrackService
+    private _trackService: TrackService,
+    private _walletService: WalletService
   ) {}
 
   @Get('/chatbase-token')
@@ -145,6 +147,12 @@ export class UsersController {
       // renewal, so counting it down would tell a customer who is not going
       // anywhere that their access is about to run out.
       trialEndsAt: trialEndsAt(org),
+      // Set by the first wallet top-up; it unlocks X, the brief and skills
+      // without changing the plan above.
+      // A paid plan never uses the wallet, so its wallet is not read.
+      payAsYouGo: hasAccess(org)
+        ? false
+        : await this._walletService.isPayAsYouGo(organization.id),
       // The app is replaced by the onboarding form until this is false.
       // @ts-ignore
       needsOnboarding: !!user.needsOnboarding,

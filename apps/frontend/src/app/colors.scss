@@ -23,6 +23,18 @@
     --new-warm: #e8a54f;
     --new-warm-soft: rgba(232, 165, 79, 0.14);
     --new-warm-hover: rgba(232, 165, 79, 0.07);
+    // Teal accent for features a wallet top-up opens (brief, skills); warm is
+    // kept for pay-per-use. The ring marks a pay-per-use channel tile.
+    --new-teal-text: #5fd3df;
+    --new-teal-soft: rgba(32, 128, 141, 0.22);
+    --new-teal-hover: rgba(32, 128, 141, 0.11);
+    --new-warm-ring: rgba(232, 165, 79, 0.45);
+    // Wallet status colours: positive amounts and success, and failures or a
+    // short balance. --new-danger is RGB channels so it takes an alpha.
+    --new-pos: #6ce9a6;
+    --new-pos-soft: rgba(108, 233, 166, 0.12);
+    --new-danger: 242 85 90;
+    --new-danger-soft: rgba(242, 85, 90, 0.1);
     --new-table-border: #2b2b2b;
     --new-table-header: #1e1d1d;
     --new-table-text: #9c9c9c;
@@ -70,6 +82,14 @@
     --new-warm: #b4762a;
     --new-warm-soft: rgba(180, 118, 42, 0.12);
     --new-warm-hover: rgba(180, 118, 42, 0.06);
+    --new-teal-text: #176a75;
+    --new-teal-soft: rgba(32, 128, 141, 0.12);
+    --new-teal-hover: rgba(32, 128, 141, 0.06);
+    --new-warm-ring: rgba(180, 118, 42, 0.5);
+    --new-pos: #12805c;
+    --new-pos-soft: rgba(18, 128, 92, 0.1);
+    --new-danger: 212 47 53;
+    --new-danger-soft: rgba(212, 47, 53, 0.08);
     --new-table-border: #e7e9eb;
     --new-table-header: #f5f7f9;
     --new-table-text: #777b7f;

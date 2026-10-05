@@ -1,6 +1,6 @@
+import { captureOrgEvent } from '@gitroom/nestjs-libraries/track/product.analytics';
 import {
   BadRequestException,
-  HttpException,
   Injectable,
   ValidationPipe,
 } from '@nestjs/common';
@@ -9,6 +9,16 @@ import {
   paidOnlyChannelMessage,
   providerNeedsPaidPlan,
 } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
+import {
+  notEnoughCreditsMessage,
+  WalletService,
+  walletFrozenMessage,
+} from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
+import {
+  REFUND_REASONS,
+  WalletPostsService,
+} from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.posts.service';
+import { walletAlert } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.alert';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
 import dayjs from 'dayjs';
@@ -60,6 +70,39 @@ type PostUrl = {
   deletedAt: Date | null;
 };
 
+// Why a post failed, in a form the app and the API can act on without reading
+// the message: 'wallet' when the wallet stopped it (not enough credits when it
+// was due, or a wallet on hold), otherwise null. Derived from the stored error,
+// which holds the message as is or inside a serialized failure.
+export type PostErrorKind = 'wallet' | null;
+
+const WALLET_ERROR_MESSAGES = [notEnoughCreditsMessage(), walletFrozenMessage()];
+
+export const postErrorKind = (error?: string | null): PostErrorKind =>
+  !!error &&
+  WALLET_ERROR_MESSAGES.some(
+    (message) =>
+      error.includes(message) ||
+      error.includes(JSON.stringify(message).slice(1, -1))
+  )
+    ? 'wallet'
+    : null;
+
+// Adds `errorKind` next to a post's `error`.
+const withErrorKind = <T extends { error?: string | null }>(post: T) => ({
+  ...post,
+  errorKind: postErrorKind(post.error),
+});
+
+// Adds `errorKind` and drops `error`, for lists that never carried the error.
+const errorKindOnly = <T extends { error?: string | null }>({
+  error,
+  ...post
+}: T) => ({
+  ...post,
+  errorKind: postErrorKind(error),
+});
+
 export type PostDependencies = {
   status: 'ready' | 'pending' | 'dead';
   pending: string[];
@@ -94,8 +137,59 @@ export class PostsService {
     private _openaiService: OpenaiService,
     private _temporalService: TemporalService,
     private _refreshIntegrationService: RefreshIntegrationService,
-    private _postRevisionService: PostRevisionService
+    private _postRevisionService: PostRevisionService,
+    private _walletService: WalletService,
+    private _walletPosts: WalletPostsService
   ) {}
+
+  // What the wallet has to do with this organization's posts:
+  // - 'wallet': it is not on a paid plan, so posts may be charged (and a
+  //   charge that can't be paid stops the save);
+  // - 'refund': it is on a paid plan but has a wallet, so charges left from
+  //   before the plan can only be given back, never taken, and a wallet
+  //   error never touches the post;
+  // - 'none': a paid plan and no wallet: the wallet is not involved at all.
+  private async walletMode(orgId: string): Promise<'wallet' | 'refund' | 'none'> {
+    let org: Awaited<
+      ReturnType<PostsRepository['organizationBillingState']>
+    > | null;
+    try {
+      org = await this._postRepository.organizationBillingState(orgId);
+    } catch (err) {
+      return hasAccess(
+        await this._postRepository.organizationSubscription(orgId)
+      )
+        ? 'none'
+        : 'wallet';
+    }
+    if (!hasAccess(org)) {
+      return 'wallet';
+    }
+    return org?.wallet ? 'refund' : 'none';
+  }
+
+  // Refunds what was charged for the unsent posts of these groups (deleted,
+  // drafted, failed). Giving credits back must never break the action that
+  // triggered it, so a failure only alerts.
+  private async refundGroups(
+    orgId: string,
+    groups: string[],
+    reason: string,
+    refundOnly = false
+  ) {
+    try {
+      await this._walletPosts.settleGroups(orgId, groups, {
+        reason,
+        refundOnly,
+      });
+    } catch (err) {
+      await walletAlert(
+        `Refund failed for post groups ${groups.join(
+          ', '
+        )} (organization ${orgId}): ${(err as Error)?.message || err}`
+      ).catch(() => undefined);
+    }
+  }
 
   // Is publishing actually moving? A stall is at least 3 posts that came due
   // 15 to 60 minutes ago and still have a live publishing job, while nothing
@@ -167,7 +261,9 @@ export class PostsService {
   }
 
   async organizationHasPaidPlan(orgId: string) {
-    return hasAccess(await this._postRepository.organizationSubscription(orgId));
+    return hasAccess(
+      await this._postRepository.organizationSubscription(orgId)
+    );
   }
 
   searchForMissingThreeHoursPosts() {
@@ -178,6 +274,7 @@ export class PostsService {
   // chain learns what actually went out.
   async updatePost(id: string, postId: string, releaseURL: string) {
     const post = await this._postRepository.updatePost(id, postId, releaseURL);
+    captureOrgEvent(post.organizationId, 'post_published', { in_thread: !!post.parentPostId });
 
     try {
       await this._postRevisionService.markPublished(
@@ -321,6 +418,43 @@ export class PostsService {
     //   return JSON.parse(getIntegrationData);
     // }
 
+    // A wallet workspace pays for the post read, once per post and UTC day,
+    // before the network is asked. Its balance must be above zero (auto
+    // top-up may refill it), else the wallet 402 is thrown and the network
+    // is not asked; the charge itself may then take the balance below zero.
+    let charge: string | false | undefined;
+    if (
+      await this._integrationService.paysFromWallet(
+        orgId,
+        getIntegration.providerIdentifier
+      )
+    ) {
+      if (
+        !(await this._integrationService.assertCanReadAnalytics(
+          orgId,
+          getIntegration.providerIdentifier,
+          'post'
+        ))
+      ) {
+        return [];
+      }
+      charge = await this._integrationService.chargeApiUse({
+        orgId,
+        identifier: getIntegration.providerIdentifier,
+        action: 'post_read',
+        chargeKey: `${getIntegration.providerIdentifier
+          .toLowerCase()
+          .split('-')[0]}read:post:${post.id}:${dayjs
+          .utc()
+          .format('YYYY-MM-DD')}`,
+        reference: post.id,
+        allowNegative: true,
+      });
+      if (!charge) {
+        return [];
+      }
+    }
+
     try {
       const loadAnalytics = await integrationProvider.postAnalytics(
         getIntegration.internalId,
@@ -328,6 +462,12 @@ export class PostsService {
         post.releaseId,
         date
       );
+      if (charge && !loadAnalytics?.length) {
+        await this._integrationService.refundApiUse(
+          charge,
+          'Refund: the post could not be read'
+        );
+      }
       await ioRedis.set(
         `integration:${orgId}:${post.id}:${date}`,
         JSON.stringify(loadAnalytics),
@@ -447,9 +587,25 @@ export class PostsService {
       includeMedia?: boolean;
       includeSettings?: boolean;
       includeThread?: boolean;
+      // Also return the stored `error` (every item has `errorKind`).
+      includeError?: boolean;
     }
   ) {
-    return this._postRepository.getPosts(orgId, query, options);
+    // Why a post failed is only read for an organization without a paid
+    // plan (the calendar marks posts the wallet stopped) or when asked for.
+    const walletErrors =
+      !options?.includeError &&
+      !(await this.organizationHasPaidPlan(orgId).catch(() => true));
+    if (!options?.includeError && !walletErrors) {
+      return this._postRepository.getPosts(orgId, query, options);
+    }
+    const posts = await this._postRepository.getPosts(orgId, query, {
+      ...options,
+      includeError: true,
+    });
+    return posts.map((post: { error?: string | null }) =>
+      options?.includeError ? withErrorKind(post) : errorKindOnly(post)
+    );
   }
 
   async getPostIdsInGroup(orgId: string, group: string) {
@@ -473,14 +629,21 @@ export class PostsService {
 
   async getPostsMinified(orgId: string, query: GetPostsDto) {
     return minifyPosts({
-      posts: await this._postRepository.getPosts(orgId, query),
+      posts: await this.getPosts(orgId, query),
     });
   }
 
   async getPostsList(orgId: string, query: GetPostsListDto) {
-    return minifyPostsList(
-      await this._postRepository.getPostsList(orgId, query)
-    );
+    if (await this.organizationHasPaidPlan(orgId).catch(() => true)) {
+      return minifyPostsList(
+        await this._postRepository.getPostsList(orgId, query)
+      );
+    }
+    const list = await this._postRepository.getPostsList(orgId, query, true);
+    return minifyPostsList({
+      ...list,
+      posts: list.posts.map(errorKindOnly),
+    });
   }
 
   async updateMedia(id: string, imagesList: any[], convertToJPEG = false) {
@@ -638,7 +801,7 @@ export class PostsService {
       group: posts?.[0]?.group,
       posts: await Promise.all(
         (posts || []).map(async (post) => ({
-          ...post,
+          ...withErrorKind(post),
           image: await this.updateMedia(
             post.id,
             JSON.parse(post.image || '[]'),
@@ -676,7 +839,7 @@ export class PostsService {
       group: posts?.[0]?.group,
       posts: await Promise.all(
         (posts || []).map(async (post) => ({
-          ...post,
+          ...withErrorKind(post),
           image: await this.updateMedia(
             post.id,
             JSON.parse(post.image || '[]'),
@@ -1022,10 +1185,23 @@ export class PostsService {
     // Resolved before the delete, while the group still points at live rows.
     let chainId: string | undefined;
     try {
-      chainId = await this._postRevisionService.resolveChainId(orgId, [], group);
+      chainId = await this._postRevisionService.resolveChainId(
+        orgId,
+        [],
+        group
+      );
     } catch (err) {}
 
     const post = await this._postRepository.deletePost(orgId, group);
+    const walletMode = await this.walletMode(orgId).catch(() => 'none');
+    if (walletMode !== 'none') {
+      await this.refundGroups(
+        orgId,
+        [group],
+        REFUND_REASONS.deleted,
+        walletMode === 'refund'
+      );
+    }
 
     if (!chainId && post?.id) {
       try {
@@ -1295,15 +1471,47 @@ export class PostsService {
     body: CreatePostDto,
     creationMethod: CreationMethod
   ): Promise<any[]> {
-    // X and TikTok are unavailable on the free plan: refuse before anything is
+    // X is unavailable on the free plan: refuse before anything is
     // saved, whether the post comes from the app, the public API or an agent.
-    if (
-      body.posts.some((post) =>
-        providerNeedsPaidPlan((post.settings as any)?.__type)
-      ) &&
-      !(await this.organizationHasPaidPlan(orgId))
-    ) {
-      throw new HttpException(paidOnlyChannelMessage(), 402);
+    // A pay-as-you-go workspace may use the ones its wallet charges for; the
+    // credits are taken when each post is published, not here.
+    for (const type of new Set(
+      body.posts.map((post) => (post.settings as any)?.__type as string)
+    )) {
+      if (
+        providerNeedsPaidPlan(type) &&
+        !(await this._integrationService.canUseProvider(orgId, type))
+      ) {
+        throw await this._walletService.providerLocked(
+          orgId,
+          type,
+          paidOnlyChannelMessage()
+        );
+      }
+    }
+
+    // Scheduling takes the credits now (drafts are free): refuse before
+    // anything is saved when the wallet can't cover it, even after an
+    // automatic top-up. A paid plan is never charged, so it skips this.
+    const walletMode = await this.walletMode(orgId);
+    if (walletMode === 'wallet') {
+      await this._walletPosts.assertCanSchedule(
+        orgId,
+        body.posts.map((post) => ({
+          identifier: (post.settings as any)?.__type,
+          values: (post.value || []).map((v) => ({
+            id: v.id,
+            content: v.content,
+          })),
+          group: post.group,
+          scheduled:
+            body.type === 'draft'
+              ? false
+              : body.type === 'update'
+              ? 'keep'
+              : true,
+        }))
+      );
     }
 
     const postList = [];
@@ -1358,6 +1566,10 @@ export class PostsService {
         });
       } catch (err) {}
 
+      // Charge what is now on the schedule, re-price what changed and give
+      // back what left it, before the post can publish.
+      await this.settleSavedPost(orgId, post.group, posts, walletMode);
+
       if (body.type !== 'update') {
         this.startWorkflow(
           post.settings.__type.split('-')[0].toLowerCase(),
@@ -1377,12 +1589,69 @@ export class PostsService {
     return postList;
   }
 
+  // The wallet side of a save: settles the saved group (and the group it
+  // replaced). If the balance no longer covers it (spent elsewhere since the
+  // check), nothing is left unpaid on the schedule: an edit goes back to
+  // drafts, a new post is removed, and the 402 reaches the caller.
+  private async settleSavedPost(
+    orgId: string,
+    previousGroup: string | undefined,
+    posts: { id: string; group: string; parentPostId?: string | null }[],
+    walletMode: 'wallet' | 'refund' | 'none'
+  ) {
+    const group = posts[0].group;
+    const groups = [group, ...(previousGroup ? [previousGroup] : [])];
+    if (walletMode === 'none') {
+      return;
+    }
+    if (walletMode === 'refund') {
+      // Nothing is charged on a paid plan: only give back what is left.
+      await this.refundGroups(
+        orgId,
+        groups,
+        REFUND_REASONS.includedInPlan,
+        true
+      );
+      return;
+    }
+    try {
+      await this._walletPosts.settleGroups(orgId, groups, {
+        reason: REFUND_REASONS.edited,
+      });
+    } catch (err) {
+      if (previousGroup) {
+        await this._postRepository.changeState(posts[0].id, 'DRAFT');
+        await this.refundGroups(orgId, groups, REFUND_REASONS.draft);
+      } else {
+        await this._postRepository.deletePost(orgId, group);
+      }
+      throw err;
+    }
+  }
+
   async separatePosts(content: string, len: number) {
     return this._openaiService.separatePosts(content, len);
   }
 
   async changeState(id: string, state: State, err?: any, body?: any) {
-    return this._postRepository.changeState(id, state, err, body);
+    const update = await this._postRepository.changeState(id, state, err, body);
+    // A post that failed gives back what its unsent parts paid. The part
+    // that failed is refunded where it was published (PostActivity); the
+    // parts after it were never tried.
+    if (state === 'ERROR' && update?.organizationId) {
+      const walletMode = await this.walletMode(update.organizationId).catch(
+        () => 'none'
+      );
+      if (walletMode !== 'none') {
+        await this.refundGroups(
+          update.organizationId,
+          [update.group],
+          REFUND_REASONS.notSent,
+          walletMode === 'refund'
+        );
+      }
+    }
+    return update;
   }
 
   async changePostStatus(
@@ -1396,7 +1665,23 @@ export class PostsService {
     }
 
     const state: State = status === 'draft' ? 'DRAFT' : 'QUEUE';
+    const walletMode = await this.walletMode(orgId);
+    if (state === 'QUEUE' && walletMode === 'wallet') {
+      // Paid before it goes on the schedule; a 402 leaves it as it was.
+      await this._walletPosts.settleGroups(orgId, [getPostById.group], {
+        reason: REFUND_REASONS.edited,
+        mainState: { [getPostById.group]: 'QUEUE' },
+      });
+    }
     await this._postRepository.changeState(id, state);
+    if (state === 'DRAFT' && walletMode !== 'none') {
+      await this.refundGroups(
+        orgId,
+        [getPostById.group],
+        REFUND_REASONS.draft,
+        walletMode === 'refund'
+      );
+    }
 
     try {
       await this.startWorkflow(
@@ -1427,6 +1712,42 @@ export class PostsService {
       getPostById.state === 'DRAFT',
       action
     );
+
+    if (
+      action === 'schedule' &&
+      getPostById.state !== 'DRAFT' &&
+      (await this.walletMode(orgId)) === 'wallet'
+    ) {
+      // Back on the schedule: pay for it (again, if it already went out
+      // once). Short of credits, it goes back to how it was.
+      try {
+        await this._walletPosts.settleGroups(orgId, [getPostById.group], {
+          reason: REFUND_REASONS.edited,
+          fresh:
+            getPostById.releaseURL || getPostById.releaseId
+              ? [getPostById.id]
+              : [],
+        });
+      } catch (err) {
+        await this._postRepository.changeDate(
+          orgId,
+          id,
+          dayjs(getPostById.publishDate).format(),
+          false,
+          'update'
+        );
+        if (getPostById.state === 'PUBLISHED') {
+          await this._postRepository.updatePost(
+            id,
+            getPostById.releaseId!,
+            getPostById.releaseURL!
+          );
+        } else {
+          await this._postRepository.changeState(id, getPostById.state);
+        }
+        throw err;
+      }
+    }
 
     if (action === 'schedule') {
       try {

@@ -8,6 +8,7 @@ import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/in
 import { SaveBriefDocumentDto } from '@gitroom/nestjs-libraries/dtos/brief/brief.dto';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import {
+  BRIEF_REGISTRY,
   BRIEF_REGISTRY_VERSION,
   isAgentManaged,
   BRIEF_ASSETS_MAX,
@@ -38,16 +39,39 @@ export class BriefService {
     orgId: string,
     category: string,
     storageKey: string,
-    content: BriefDocumentContent
+    content: BriefDocumentContent,
+    options?: { deleted?: boolean }
   ) {
     try {
       await this._briefRevisionService.capture(
         orgId,
         category,
         storageKey,
-        content
+        content,
+        options
       );
     } catch (err) {}
+  }
+
+  // Why a category/key pair is not a document, in words that say what would
+  // have been accepted instead.
+  private unknownDocument(category: string, key: string) {
+    const definition = findCategory(category);
+    if (!definition) {
+      return new NotFoundException(
+        `Unknown category "${category}". Use one of: ${BRIEF_REGISTRY.map(
+          (one) => one.id
+        ).join(', ')}.`
+      );
+    }
+
+    return new NotFoundException(
+      `"${key}" is not a ${definition.label} document, and new ones cannot be added there. Allowed keys: ${(
+        definition.documents || []
+      )
+        .map((document) => document.key)
+        .join(', ')}.`
+    );
   }
 
   async getDocuments(orgId: string) {
@@ -97,7 +121,7 @@ export class BriefService {
     const definition = findCategory(category);
     const document = resolveDocumentDef(category, key);
     if (!definition || !document) {
-      throw new NotFoundException('Document not found');
+      throw this.unknownDocument(category, key);
     }
 
     const storageKey = await this.toStorageKey(orgId, category, key);
@@ -152,11 +176,18 @@ export class BriefService {
     orgId: string,
     category: string,
     key: string,
-    viaAgent = false
+    viaAgent = false,
+    // Keep the document's history and record the removal in it, rather than
+    // wiping it. Used when a redone onboarding replaces the brief, so what it
+    // removed can still be seen afterwards.
+    keepHistory = false,
+    // Answer { deleted: false } when nothing is stored under that key, rather
+    // than reporting a delete.
+    reportMissing = false
   ) {
     const definition = findCategory(category);
     if (!definition || !resolveDocumentDef(category, key)) {
-      throw new NotFoundException('Document not found');
+      throw this.unknownDocument(category, key);
     }
 
     // Registry documents are emptied rather than removed, so only a category
@@ -170,16 +201,39 @@ export class BriefService {
     }
 
     const storageKey = await this.toStorageKey(orgId, category, key);
+    const existing =
+      keepHistory || reportMissing
+        ? await this._briefRepository.getDocument(orgId, category, storageKey)
+        : null;
+
+    if (reportMissing && !existing) {
+      return { deleted: false };
+    }
+
     await this._briefRepository.deleteDocument(orgId, category, storageKey);
 
-    // A document that is gone leaves no history behind, same as a deleted post.
-    try {
-      await this._briefRevisionService.deleteDocument(
+    if (!keepHistory) {
+      // A document that is gone leaves no history behind, same as a deleted
+      // post.
+      try {
+        await this._briefRevisionService.deleteDocument(
+          orgId,
+          category,
+          storageKey
+        );
+      } catch (err) {}
+    } else if (existing) {
+      // The history is kept and the removal recorded in it. Only the
+      // document's name is kept in that record.
+      const { title } = this.parseContent(existing.content);
+      await this.capture(
         orgId,
         category,
-        storageKey
+        storageKey,
+        { ...emptyContent(), ...(title ? { title } : {}) },
+        { deleted: true }
       );
-    } catch (err) {}
+    }
 
     return { deleted: true };
   }
@@ -297,6 +351,41 @@ export class BriefService {
     await this.capture(orgId, category, key, content);
 
     return { assets: content.assets.length };
+  }
+
+  // Takes files off Branding & assets by id, leaving the rules and every
+  // other file as they are. Ids that are not there are reported back.
+  async removeAssets(orgId: string, assetIds: string[]) {
+    const category = 'foundation';
+    const key = 'branding-assets';
+
+    const existing = await this._briefRepository.getDocument(
+      orgId,
+      category,
+      key
+    );
+
+    const content = this.parseContent(existing?.content);
+    const assets = content.assets || [];
+    const wanted = new Set(assetIds);
+    const kept = assets.filter((asset) => !wanted.has(asset.id));
+    const removed = assets
+      .filter((asset) => wanted.has(asset.id))
+      .map((asset) => asset.id);
+    const notFound = assetIds.filter((id) => !removed.includes(id));
+
+    if (existing && removed.length) {
+      content.assets = kept;
+      await this._briefRepository.saveDocument(
+        orgId,
+        category,
+        key,
+        JSON.stringify(content)
+      );
+      await this.capture(orgId, category, key, content);
+    }
+
+    return { removed, notFound, assets: kept.length };
   }
 
   // Everything the agent knows about the business, as one structure. Nothing

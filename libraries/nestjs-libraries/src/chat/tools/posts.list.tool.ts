@@ -7,6 +7,15 @@ import z from 'zod';
 import { checkAuth } from '@gitroom/nestjs-libraries/chat/auth.context';
 import { readPostMedia } from '@gitroom/nestjs-libraries/chat/tools/post.write.shared';
 import { guessMimeFromPath } from '@gitroom/nestjs-libraries/chat/tools/media.preview.helper';
+import {
+  describePostError,
+  errorMessageForAgent,
+  POST_ERROR_KINDS,
+} from '@gitroom/nestjs-libraries/chat/tools/post.error.shared';
+import {
+  onPaidPlan,
+  orgFromContext,
+} from '@gitroom/nestjs-libraries/chat/tools/wallet.shared';
 
 const DEFAULT_RANGE_IN_DAYS = 30;
 
@@ -67,6 +76,10 @@ TO LINK ONE POST TO ANOTHER (echoing a post to another channel): every post here
           .describe(
             'Optional group (customer) id from the groupList tool, to only list posts of that customer'
           ),
+        state: z
+          .enum(['QUEUE', 'PUBLISHED', 'ERROR', 'DRAFT'])
+          .optional()
+          .describe('Only list posts in this state. Omit for every state.'),
       }),
       outputSchema: z.object({
         total: z.number().optional(),
@@ -79,6 +92,20 @@ TO LINK ONE POST TO ANOTHER (echoing a post to another channel): every post here
               publishDate: z.string(),
               content: z.string(),
               releaseURL: z.string().nullable(),
+              error: z
+                .string()
+                .nullable()
+                .optional()
+                .describe(
+                  'Why the post failed to publish, when it did, in one short line'
+                ),
+              errorKind: z
+                .enum(POST_ERROR_KINDS)
+                .nullable()
+                .optional()
+                .describe(
+                  'Why it failed: wallet, refresh_needed, channel_disabled, reference, provider or unknown. Null when it did not fail.'
+                ),
               attachments: z
                 .array(
                   z.object({
@@ -152,6 +179,8 @@ TO LINK ONE POST TO ANOTHER (echoing a post to another channel): every post here
       }),
       execute: async (inputData, context) => {
         checkAuth(inputData, context);
+        // A paid plan gets the list as it always had it: no failure reasons.
+        const paidPlan = onPaidPlan(orgFromContext(context));
         try {
           const organizationId = JSON.parse(
             (context?.requestContext as any)?.get('organization') as string
@@ -171,7 +200,16 @@ TO LINK ONE POST TO ANOTHER (echoing a post to another channel): every post here
               endDate,
               customer: inputData.customer,
             },
-            { includeMedia: true, includeSettings: true, includeThread: true }
+            {
+              includeMedia: true,
+              includeSettings: true,
+              includeThread: true,
+              ...(paidPlan ? {} : { includeError: true }),
+            }
+          );
+
+          const inState = (posts || []).filter(
+            (post: any) => !inputData.state || post.state === inputData.state
           );
 
           // One lookup for every attachment across the whole page, rather than
@@ -193,7 +231,7 @@ TO LINK ONE POST TO ANOTHER (echoing a post to another channel): every post here
 
           const allPaths = Array.from(
             new Set(
-              (posts || []).flatMap((post: any) =>
+              inState.flatMap((post: any) =>
                 [post, ...threadOf(post)].flatMap((entry: any) =>
                   readPostMedia(entry)
                     .map((media: any) => media?.path)
@@ -227,13 +265,14 @@ TO LINK ONE POST TO ANOTHER (echoing a post to another channel): every post here
               };
             });
 
-          const output = (posts || []).map((post: any) => ({
+          const output = inState.map((post: any) => ({
             id: post.id,
             group: post.group ?? null,
             state: post.state,
             publishDate: new Date(post.publishDate).toISOString(),
             content: post.content || '',
             releaseURL: post.releaseURL ?? null,
+            ...(paidPlan ? {} : describePostError(post.error, post.errorKind)),
             attachments: describeAttachments(post),
             comments: threadOf(post).map((item: any) => ({
               id: item.id,
@@ -256,7 +295,11 @@ TO LINK ONE POST TO ANOTHER (echoing a post to another channel): every post here
         } catch (err) {
           return {
             error: `Failed to list posts: ${
-              err instanceof Error ? err.message : 'Unexpected error'
+              paidPlan
+                ? err instanceof Error
+                  ? err.message
+                  : 'Unexpected error'
+                : errorMessageForAgent(err)
             }`,
           };
         }

@@ -23,13 +23,26 @@ export const checkAuth = (
 // paid tool stays listed for everybody and refuses when a free organization
 // calls it. Call it right after checkAuth, which is what puts the organization
 // into the request context.
-export const paidOnly = (context: any, feature: string) => {
+//
+// walletKey: what a wallet top-up opens it under (see
+// WalletService.unlockedKeys); startMcp lists those on the organization.
+export const paidOnly = (
+  context: any,
+  feature: string,
+  walletKey?: string
+) => {
+  const locked = walletKey
+    ? `${feature} opens after your first wallet top-up.`
+    : paidFeatureMessage(feature);
   try {
     const organization = JSON.parse(
       (context?.requestContext as any)?.get('organization') as string
     );
-    return hasAccess(organization) ? null : paidFeatureMessage(feature);
+    return hasAccess(organization) ||
+      (walletKey && organization?.walletUnlocks?.includes(walletKey))
+      ? null
+      : locked;
   } catch (err) {
-    return paidFeatureMessage(feature);
+    return locked;
   }
 };

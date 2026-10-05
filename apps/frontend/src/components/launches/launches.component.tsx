@@ -15,6 +15,10 @@ import { Menu } from '@gitroom/frontend/components/launches/menu/menu';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Integration } from '@prisma/client';
 import ImageWithFallback from '@gitroom/react/helpers/image.with.fallback';
+import {
+  PER_USE_RING,
+  usePerUseProviders,
+} from '@gitroom/frontend/components/wallet-locks/wallet.access';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { useFireEvents } from '@gitroom/helpers/utils/use.fire.events';
 import { Calendar } from './calendar';
@@ -236,6 +240,7 @@ export const MenuComponent: FC<
   } = props;
   const user = useUser();
   const t = useT();
+  const perUse = usePerUseProviders();
   const [collected, drag, dragPreview] = useDrag(() => ({
     type: 'menu',
     item: {
@@ -292,7 +297,10 @@ export const MenuComponent: FC<
         <ImageWithFallback
           fallbackSrc={'/no-picture.jpg'}
           src={integration.picture || '/no-picture.jpg'}
-          className="rounded-[8px] min-w-[36px] min-h-[36px]"
+          className={clsx(
+            'rounded-[8px] min-w-[36px] min-h-[36px]',
+            perUse.has(integration.identifier) && PER_USE_RING
+          )}
           alt={integration.identifier}
           width={36}
           height={36}
@@ -473,6 +481,7 @@ export const LaunchesComponent = () => {
     }
     if (search.get('added')) {
       fireEvents('channel_added');
+      fireEvents('channel_connected', { provider: search.get('added') === 'true' ? undefined : search.get('added') }, { send_instantly: true });
       window?.opener?.postMessage(
         {
           msg: t('channel_added', 'Channel added'),

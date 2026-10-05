@@ -2,6 +2,7 @@
 
 import { FC, useCallback, useState } from 'react';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
+import { useBriefClassic } from '@gitroom/frontend/components/agent-brief/brief.classic';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import {
   BRIEF_LINK_NOTE_MAX,
@@ -17,6 +18,7 @@ export const BriefLinks: FC<{
   onChange: (links: BriefLink[]) => void;
 }> = ({ links, onChange }) => {
   const t = useT();
+  const classic = useBriefClassic();
   // Local first so typing stays responsive; the parent debounces the save.
   const [current, setCurrent] = useState<BriefLink[]>(links);
 
@@ -54,7 +56,11 @@ export const BriefLinks: FC<{
       {current.map((link) => (
         <div
           key={link.id}
-          className="flex flex-col gap-[8px] rounded-[10px] border border-newTableBorder p-[12px] focus-within:border-warm transition-colors"
+          className={
+            classic
+              ? 'flex flex-col gap-[8px] rounded-[10px] border border-newTableBorder p-[12px] focus-within:border-warm transition-colors'
+              : 'flex flex-col gap-[8px] rounded-[10px] border border-newTableBorder p-[12px] focus-within:border-tealText transition-colors'
+          }
         >
           <div className="flex items-center gap-[10px]">
             <svg
@@ -63,7 +69,9 @@ export const BriefLinks: FC<{
               height="16"
               viewBox="0 0 16 16"
               fill="none"
-              className="text-warm shrink-0"
+              className={
+                classic ? 'text-warm shrink-0' : 'text-tealText shrink-0'
+              }
             >
               <path
                 d="M6.7 8.7a2.9 2.9 0 0 0 4.4.4l2-2a2.9 2.9 0 1 0-4.1-4.1l-1.1 1.1M9.3 7.3a2.9 2.9 0 0 0-4.4-.4l-2 2a2.9 2.9 0 1 0 4.1 4.1l1.1-1.1"
@@ -77,6 +85,7 @@ export const BriefLinks: FC<{
               value={link.url}
               onChange={change(link.id, 'url')}
               maxLength={BRIEF_LINK_URL_MAX}
+              dir="auto"
               placeholder={t('brief_link_placeholder', 'Paste a link...')}
               className="flex-1 bg-transparent outline-none text-[14px] placeholder:text-textItemBlur"
             />
@@ -84,7 +93,11 @@ export const BriefLinks: FC<{
               onClick={remove(link.id)}
               data-tooltip-id="tooltip"
               data-tooltip-content={t('brief_remove_link', 'Remove link')}
-              className="cursor-pointer select-none text-textItemBlur hover:text-warm transition-colors"
+              className={
+                classic
+                  ? 'cursor-pointer select-none text-textItemBlur hover:text-warm transition-colors'
+                  : 'cursor-pointer select-none text-textItemBlur hover:text-tealText transition-colors'
+              }
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -108,6 +121,7 @@ export const BriefLinks: FC<{
             onChange={change(link.id, 'note')}
             maxLength={BRIEF_LINK_NOTE_MAX}
             rows={2}
+            dir="auto"
             placeholder={t(
               'brief_link_note_placeholder',
               'What is this, and how should the agent use it?'
@@ -120,7 +134,11 @@ export const BriefLinks: FC<{
       {current.length < BRIEF_LINKS_MAX && (
         <div
           onClick={add}
-          className="self-start cursor-pointer select-none flex items-center gap-[8px] rounded-[8px] border border-dashed border-newTableBorder px-[14px] h-[38px] text-[14px] text-textItemBlur hover:border-warm hover:text-warm hover:bg-warmHover transition-colors"
+          className={
+            classic
+              ? 'self-start cursor-pointer select-none flex items-center gap-[8px] rounded-[8px] border border-dashed border-newTableBorder px-[14px] h-[38px] text-[14px] text-textItemBlur hover:border-warm hover:text-warm hover:bg-warmHover transition-colors'
+              : 'self-start cursor-pointer select-none flex items-center gap-[8px] rounded-[8px] border border-dashed border-newTableBorder px-[14px] h-[38px] text-[14px] text-textItemBlur hover:border-tealText hover:text-tealText hover:bg-tealHover transition-colors'
+          }
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"

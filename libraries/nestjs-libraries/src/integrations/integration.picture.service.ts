@@ -3,6 +3,12 @@ import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { ssrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
+import { WalletService } from '@gitroom/nestjs-libraries/database/prisma/wallet/wallet.service';
+import {
+  AccessOrganization,
+  hasAccess,
+  providerNeedsPaidPlan,
+} from '@gitroom/nestjs-libraries/database/prisma/subscriptions/trial';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { fromBuffer } = require('file-type');
 
@@ -48,7 +54,8 @@ export type ResolvedPicture = { buffer: Buffer; contentType: string };
 export class IntegrationPictureService {
   constructor(
     private _integration: PrismaRepository<'integration'>,
-    private _integrationManager: IntegrationManager
+    private _integrationManager: IntegrationManager,
+    private _walletService: WalletService
   ) {}
 
   private cacheKey(id: string) {
@@ -101,6 +108,8 @@ export class IntegrationPictureService {
         picture: true,
         pictureSource: true,
         providerIdentifier: true,
+        organizationId: true,
+        organization: { select: { subscription: true } },
       },
     });
 
@@ -139,6 +148,8 @@ export class IntegrationPictureService {
     internalId: string;
     pictureSource: string | null;
     providerIdentifier: string;
+    organizationId: string;
+    organization: AccessOrganization | null;
   }): Promise<string | null> {
     let provider: any;
 
@@ -151,6 +162,20 @@ export class IntegrationPictureService {
     }
 
     if (typeof provider?.currentProfilePicture !== 'function') {
+      return integration.pictureSource || null;
+    }
+
+    // A workspace paying for X from its wallet would pay for this lookup
+    // without having asked for it, so its avatar keeps the URL stored when
+    // the channel was connected.
+    if (
+      providerNeedsPaidPlan(integration.providerIdentifier) &&
+      !hasAccess(integration.organization) &&
+      (await this._walletService.unlocksProvider(
+        integration.organizationId,
+        integration.providerIdentifier
+      ))
+    ) {
       return integration.pictureSource || null;
     }
 

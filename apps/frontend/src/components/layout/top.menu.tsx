@@ -1,12 +1,26 @@
 'use client';
 
-import { FC, ReactNode, useCallback } from 'react';
+import { FC, ReactNode, useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+import clsx from 'clsx';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { MenuItem } from '@gitroom/frontend/components/new-layout/menu-item';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import { AgentMediaModal } from '@gitroom/frontend/components/layout/agent.media.modal';
+import {
+  TONE_SOFT,
+  TONE_TEXT,
+  useFeatureTone,
+  useWalletAccess,
+  WalletAccess,
+} from '@gitroom/frontend/components/wallet-locks/wallet.access';
+import {
+  LockIcon,
+  SkillsIcon,
+} from '@gitroom/frontend/components/wallet-locks/wallet.icons';
 
 interface MenuItemInterface {
   name: string;
@@ -19,12 +33,19 @@ interface MenuItemInterface {
   requireAi?: boolean;
   onClick?: () => void;
   comingSoon?: boolean;
+  // Opened by the first wallet top-up: shown locked on the free plan, with
+  // this text on hover.
+  lockedTip?: string;
+  // The (i) beside the page title. Not shown while the feature is locked.
+  titleInfo?: string;
 }
 
 export const useMenuItem = () => {
   const { isGeneral } = useVariables();
   const t = useT();
   const { openModal } = useModals();
+  // A paid plan keeps the menu it had: the brief as before, no skills.
+  const paidPlan = useWalletAccess() === 'plan';
 
   const handleAgentMediaClick = useCallback(() => {
     openModal({
@@ -148,7 +169,32 @@ export const useMenuItem = () => {
         </svg>
       ),
       path: '/brief',
-      requireAi: true,
+      ...(paidPlan
+        ? { requireAi: true }
+        : {
+            lockedTip: t(
+              'brief_locked_tip',
+              'Top up to start the brief onboarding.'
+            ),
+            titleInfo: t(
+              'brief_title_info',
+              'Brief is the structured document about your brand, audience, voice and channels. It steers what your agent writes. Imagine you are briefing your chief marketing officer: you can brief the agent manually, via MCP using another agent, or by talking directly to the agent.'
+            ),
+          }),
+    },
+    {
+      name: t('skills', 'Skills'),
+      icon: <SkillsIcon />,
+      path: '/skills',
+      hide: paidPlan,
+      lockedTip: `${t(
+        'skills_locked',
+        'Ready-made skills for hooks, writing in your voice, removing AI slop, and shaping posts for every channel. Skills are available to your agent through MCP.'
+      )} ${t('skills_locked_unlock', 'A single top-up unlocks them.')}`,
+      titleInfo: t(
+        'skills_title_info',
+        'Ready-made skills for hooks, writing in your voice, removing AI slop, and shaping posts for every channel. Using them is free.'
+      ),
     },
     {
       name: t('agent', 'Agent'),
@@ -373,11 +419,77 @@ export const useMenuItem = () => {
   };
 };
 
+// The menu sits on the start side, so its hovers open towards the end.
+const useEndSide = () => {
+  const [place, setPlace] = useState<'right' | 'left'>('right');
+  useEffect(() => {
+    setPlace(document.documentElement.dir === 'rtl' ? 'left' : 'right');
+  }, []);
+  return place;
+};
+
+// A feature the first wallet top-up opens, seen on the free plan. It still
+// leads to its page, which explains it and offers the top-up. The lock is
+// warm, like every signal that needs a top-up.
+const LockedMenuItem: FC<{
+  label: string;
+  icon: ReactNode;
+  path: string;
+  tip: string;
+}> = ({ label, icon, path, tip }) => {
+  const t = useT();
+  const currentPath = usePathname();
+  const place = useEndSide();
+  const isActive = currentPath.indexOf(path) === 0;
+  const tone = useFeatureTone(path.replace(/^\//, ''));
+  return (
+    <Link
+      prefetch={true}
+      href={path}
+      aria-label={t('menu_locked_label', '{{label}}, locked. {{tip}}', {
+        label,
+        tip,
+      })}
+      data-tooltip-id="tooltip"
+      data-tooltip-content={tip}
+      data-tooltip-place={place}
+      data-tooltip-class-name="!max-w-[280px] !whitespace-normal !leading-[1.5]"
+      className={clsx(
+        'group relative w-full minCustom:h-[54px] custom:h-[44px] py-[8px] px-[6px] minCustom:gap-[4px] custom:gap-[2px] flex flex-col font-[600] items-center justify-center rounded-[12px] transition-colors hover:bg-boxHover hover:text-newTextColor',
+        isActive ? 'bg-boxHover text-newTextColor' : 'text-textItemBlur'
+      )}
+    >
+      <div className="custom:scale-90 opacity-60 group-hover:opacity-90 transition-opacity">
+        {icon}
+      </div>
+      <div className="custom:text-[9px] minCustom:text-[10px] leading-[1.1] text-center opacity-60 group-hover:opacity-90">
+        {label}
+      </div>
+      <span
+        className={clsx(
+          'absolute top-[5px] end-[9px] w-[16px] h-[16px] rounded-full border border-newBgColorInner flex items-center justify-center',
+          TONE_SOFT[tone],
+          TONE_TEXT[tone]
+        )}
+      >
+        <LockIcon size={9} />
+      </span>
+    </Link>
+  );
+};
+
+const isLocked = (item: MenuItemInterface, access?: WalletAccess) =>
+  !!item.lockedTip && access === 'free';
+
 export const TopMenu: FC = () => {
   const user = useUser();
   const t = useT();
   const { firstMenu, secondMenu } = useMenuItem();
   const { isGeneral, billingEnabled } = useVariables();
+  const access = useWalletAccess();
+  // Free and pay-as-you-go workspaces pay through the wallet; Postiz billing
+  // is for the paid plans.
+  const walletWorkspace = access === 'free' || access === 'payg';
 
   const menuVisible = (f: MenuItemInterface) => {
     if (f.hide) {
@@ -414,15 +526,25 @@ export const TopMenu: FC = () => {
             // @ts-ignore
             (user.tier !== 'FREE' || !isGeneral || !billingEnabled) && (
               <>
-                {firstActive.map((item) => (
-                  <MenuItem
-                    path={item.path}
-                    label={item.name}
-                    icon={item.icon}
-                    key={item.name}
-                    onClick={item.onClick}
-                  />
-                ))}
+                {firstActive.map((item) =>
+                  isLocked(item, access) ? (
+                    <LockedMenuItem
+                      path={item.path}
+                      label={item.name}
+                      icon={item.icon}
+                      tip={item.lockedTip!}
+                      key={item.name}
+                    />
+                  ) : (
+                    <MenuItem
+                      path={item.path}
+                      label={item.name}
+                      icon={item.icon}
+                      key={item.name}
+                      onClick={item.onClick}
+                    />
+                  )
+                )}
                 {firstComingSoon.length > 0 && (
                   <div className="flex flex-col minCustom:gap-[16px] custom:gap-[8px] minCustom:mt-[12px] custom:mt-[6px]">
                     <div className="text-[9px] uppercase tracking-[0.08em] text-textItemBlur text-center leading-none whitespace-nowrap">
@@ -453,6 +575,9 @@ export const TopMenu: FC = () => {
               return false;
             }
             if (f.name === 'Billing' && user?.isLifetime) {
+              return false;
+            }
+            if (f.path === '/billing' && walletWorkspace) {
               return false;
             }
             if (f.role) {
