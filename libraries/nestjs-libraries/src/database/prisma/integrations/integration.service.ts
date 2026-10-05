@@ -25,6 +25,10 @@ import utc from 'dayjs/plugin/utc';
 import { AutopostRepository } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.repository';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { TemporalService } from 'nestjs-temporal-core';
+import {
+  listRecentMedia as readRecentMedia,
+  RecentMediaOptions,
+} from '@gitroom/nestjs-libraries/integrations/social/recent.media';
 
 dayjs.extend(utc);
 
@@ -456,6 +460,24 @@ export class IntegrationService {
       );
       return [];
     }
+  }
+
+  // Read-only: no refresh, no disable, no disconnect. See recent.media.ts.
+  listRecentMedia(
+    orgId: string,
+    integrationId: string,
+    opts: RecentMediaOptions
+  ) {
+    return readRecentMedia(
+      {
+        getIntegration: (org, id) => this.getIntegrationById(org, id),
+        getProvider: (identifier) =>
+          this._integrationManager.getSocialIntegration(identifier),
+      },
+      orgId,
+      integrationId,
+      opts
+    );
   }
 
   customers(orgId: string) {

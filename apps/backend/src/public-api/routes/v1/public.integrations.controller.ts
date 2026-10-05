@@ -62,6 +62,12 @@ import { RefreshToken } from '@gitroom/nestjs-libraries/integrations/social.abst
 import { PostValidationException } from '@gitroom/backend/api/routes/posts.validation.exception';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import {
+  decodeCursor,
+  parseLimit,
+  RecentMediaError,
+  toRecentMediaErrorResponse,
+} from '@gitroom/nestjs-libraries/integrations/social/recent.media';
 
 import {
   paidOnlyChannelMessage,
@@ -385,6 +391,42 @@ export class PublicIntegrationsController {
             }
           : undefined,
       }));
+  }
+
+  // Read-only history of an Instagram channel's existing media. Tenant scoped:
+  // an id from another organization is a plain 404 and nothing is requested
+  // from Instagram. Failures use fixed { code, message } bodies.
+  @Get('/integrations/:id/media')
+  async listIntegrationMedia(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query('limit') limit?: string | string[],
+    @Query('cursor') cursor?: string | string[]
+  ) {
+    Sentry.metrics.count('public_api-request', 1);
+    try {
+      const result = await this._integrationService.listRecentMedia(org.id, id, {
+        limit: parseLimit(limit),
+        after: decodeCursor(cursor),
+      });
+      return {
+        integration_id: result.integrationId,
+        provider: result.provider,
+        fetched_at: new Date().toISOString(),
+        media: result.media,
+        paging: { next_cursor: result.nextCursor },
+      };
+    } catch (error) {
+      if (!(error instanceof RecentMediaError)) {
+        // Name only: the error can carry request URLs, and so tokens.
+        console.error(
+          'Recent media failed:',
+          error instanceof Error ? error.name : typeof error
+        );
+      }
+      const { status, body } = toRecentMediaErrorResponse(error);
+      throw new HttpException(body, status);
+    }
   }
 
   @Get('/social/:integration')

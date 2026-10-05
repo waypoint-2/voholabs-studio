@@ -17,6 +17,12 @@ import { Integration } from '@prisma/client';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 import { Tool } from '@gitroom/nestjs-libraries/integrations/tool.decorator';
 import { hasExtension } from '@gitroom/helpers/utils/has.extension';
+import {
+  fetchRecentMediaPage,
+  GraphHost,
+  RecentMediaOptions,
+  RecentMediaPage,
+} from '@gitroom/nestjs-libraries/integrations/social/recent.media';
 
 @Rules(
   "Instagram should have at least one attachment, if it's a story, it can have only one picture"
@@ -993,6 +999,21 @@ export class InstagramProvider
     );
 
     return analytics;
+  }
+
+  recentMedia(
+    id: string,
+    token: string,
+    opts: RecentMediaOptions,
+    type: GraphHost = 'graph.facebook.com'
+  ): Promise<RecentMediaPage> {
+    return fetchRecentMediaPage({
+      host: type,
+      id,
+      token,
+      limit: opts.limit,
+      after: opts.after,
+    });
   }
 
   music(accessToken: string, data: { q: string }) {

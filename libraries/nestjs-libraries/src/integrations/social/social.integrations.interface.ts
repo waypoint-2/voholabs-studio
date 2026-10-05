@@ -1,4 +1,8 @@
 import { Integration } from '@prisma/client';
+import {
+  RecentMediaOptions,
+  RecentMediaPage,
+} from '@gitroom/nestjs-libraries/integrations/social/recent.media';
 
 export interface ClientInformation {
   client_id: string;
@@ -48,6 +52,13 @@ export interface IAuthenticator {
     postId: string,
     fromDate: number,
   ): Promise<AnalyticsData[]>;
+  // Read-only listing of the account's existing media (Instagram only today).
+  // Backs GET /public/v1/integrations/:id/media; it must have no side effects.
+  recentMedia?(
+    id: string,
+    accessToken: string,
+    opts: RecentMediaOptions
+  ): Promise<RecentMediaPage>;
   changeNickname?(
     id: string,
     accessToken: string,
