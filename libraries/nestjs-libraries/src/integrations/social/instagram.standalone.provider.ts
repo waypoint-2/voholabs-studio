@@ -14,6 +14,10 @@ import { InstagramDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-set
 import { InstagramProvider } from '@gitroom/nestjs-libraries/integrations/social/instagram.provider';
 import { Integration } from '@prisma/client';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import {
+  RecentMediaOptions,
+  RecentMediaPage,
+} from '@gitroom/nestjs-libraries/integrations/social/recent.media';
 
 const instagramProvider = new InstagramProvider();
 
@@ -217,6 +221,19 @@ export class InstagramStandaloneProvider
       id,
       accessToken,
       date,
+      'graph.instagram.com'
+    );
+  }
+
+  recentMedia(
+    id: string,
+    accessToken: string,
+    opts: RecentMediaOptions
+  ): Promise<RecentMediaPage> {
+    return instagramProvider.recentMedia(
+      id,
+      accessToken,
+      opts,
       'graph.instagram.com'
     );
   }
